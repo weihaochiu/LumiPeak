@@ -1,6 +1,6 @@
 # Windows release guide / Windows 發佈說明
 
-目前狀態：自動發佈工作流程尚未啟用，首個 Release 尚未發佈。首次可在 GitHub Releases 手動上傳已完成的安裝檔；以下自動化步驟需專案擁有者同意後才會啟用。
+目前狀態：自動發佈工作流程已啟用，首個正式版 [v0.5.0](https://github.com/weihaochiu/LumiPeak/releases/tag/v0.5.0) 已發佈。執行紀錄：[Windows build and release](https://github.com/weihaochiu/LumiPeak/actions/runs/40064721085)。
 
 ## First publication / 首次發佈
 
@@ -13,8 +13,8 @@
    This updates both READMEs and the update source bundled with the application.
    此步驟會同步設定中英文說明的下載按鈕，以及程式內的版本檢查來源。
 
-2. Choose source-code license terms before publication. No license is imposed by this setup.
-   公開前請決定原始碼授權條款；目前尚未選定。
+2. Source-code license terms have not been selected. The owner can add a LICENSE file separately.
+   原始碼授權尚未選定，可由專案擁有者另外補上 LICENSE。
 
 3. Install build requirements and Inno Setup 6+:
 
