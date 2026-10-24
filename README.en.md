@@ -6,11 +6,11 @@
 
 One application includes Traditional Chinese and English with immediate language switching. This repository hosts the PL Studio source, documentation and Windows releases.
 
-[Releases and downloads](https://github.com/weihaochiu/LumiPeak/releases) · [User guide](docs/USER_GUIDE.en.md) · [Requirements and verification log](docs/需求紀錄.md) · [Report an issue](https://github.com/weihaochiu/LumiPeak/issues)
+[⬇ Download for Windows](https://github.com/weihaochiu/LumiPeak/releases/latest/download/PL-Studio-Setup.exe) · [User guide](docs/USER_GUIDE.en.md) · [Requirements and verification log](docs/需求紀錄.md) · [Report an issue](https://github.com/weihaochiu/LumiPeak/issues)
 
 <!-- DOWNLOAD_STATUS -->
-> **Release status: version 0.5.0 has passed local installation tests. The first Windows Release has not been published yet.**
-> The ZIP currently in the repository contains source code. The Windows installer will be provided through Releases, with a direct download button here once it is published.
+> **Latest stable release: [v0.5.0](https://github.com/weihaochiu/LumiPeak/releases/tag/v0.5.0)** · Windows x64 · Traditional Chinese / English.
+> Download `PL-Studio-Setup.exe` using the button above. The installer includes Python and required libraries.
 <!-- /DOWNLOAD_STATUS -->
 
 ![PL Studio English interface showing a synthetic spectrum fit, results and controls](docs/interface-en.png)
@@ -19,7 +19,7 @@ One application includes Traditional Chinese and English with immediate language
 
 ## Download and install
 
-Once the Windows installer is published:
+Installation steps:
 
 1. Open [Releases](https://github.com/weihaochiu/LumiPeak/releases) and download `PL-Studio-Setup.exe`.
 2. Run the installer and follow the wizard. A desktop shortcut is optional.
@@ -62,7 +62,7 @@ Left-hand checkboxes control plot content. Ctrl / Shift highlighting selects dat
 - **Startup checks:** background checks look for newer stable GitHub Releases and offer Download update, Remind me later and Skip this version.
 - **Manual checks:** use `Settings → Check for updates now`, or disable startup checks. Manual checks can show previously skipped versions.
 - **Installing updates:** save your project and close PL Studio before running the downloaded installer.
-- **Offline access and data:** failed checks do not interrupt analysis. Checks retrieve public version information without uploading spectra or project data. Before the first Release is published, a manual check may report that updates are unavailable.
+- **Offline access and data:** failed checks do not interrupt analysis. Checks retrieve public version information without uploading spectra or project data.
 
 ## Analysis scope
 
@@ -93,4 +93,4 @@ Alternatively run `INSTALL.bat`, then `START_PL.bat`. `START_DEMO.bat` generates
 - [Build and release guide](docs/RELEASING.md): maintainer packaging and publication steps.
 - [Issues](https://github.com/weihaochiu/LumiPeak/issues): include application version, Windows version, reproduction steps and error messages. Synthetic examples without private data are welcome.
 
-Local installation, installed-application and uninstall checks have passed, along with 56 existing feature tests and 14 release / language tests. Compatibility on another computer still requires validation. No source license has been selected yet.
+Local installation, installed-application and uninstall checks have passed, along with 56 existing feature tests and 14 release / language tests. GitHub Actions passed 68 tests; 2 tests requiring local reference data were skipped. Compatibility on another computer still requires validation. No source license has been selected yet.

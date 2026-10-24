@@ -6,11 +6,11 @@
 
 同一套軟體支援繁體中文與英文，可在設定選單即時切換。LumiPeak 是 PL Studio 的原始碼、說明文件與 Windows 發佈專案。
 
-[版本與下載](https://github.com/weihaochiu/LumiPeak/releases) · [詳細使用說明](docs/USER_GUIDE.zh-TW.md) · [需求與驗證紀錄](docs/需求紀錄.md) · [問題回報](https://github.com/weihaochiu/LumiPeak/issues)
+[⬇ 下載 Windows 安裝版](https://github.com/weihaochiu/LumiPeak/releases/latest/download/PL-Studio-Setup.exe) · [詳細使用說明](docs/USER_GUIDE.zh-TW.md) · [需求與驗證紀錄](docs/需求紀錄.md) · [問題回報](https://github.com/weihaochiu/LumiPeak/issues)
 
 <!-- DOWNLOAD_STATUS -->
-> **發佈狀態：0.5.0 已完成本機安裝測試，首個 Windows Release 尚未發佈。**
-> 目前儲存庫中的 ZIP 是原始碼封裝。Windows 安裝檔將在 Releases 提供；發佈完成後，這裡會提供直接下載按鈕。
+> **最新正式版：[v0.5.0](https://github.com/weihaochiu/LumiPeak/releases/tag/v0.5.0)** · Windows x64 · 繁體中文／English。
+> 點上方按鈕下載 `PL-Studio-Setup.exe`。安裝包已包含 Python 與必要套件。
 <!-- /DOWNLOAD_STATUS -->
 
 ![PL Studio 繁體中文介面：合成光譜擬合、結果表與操作面板](docs/interface-zh-TW.png)
@@ -19,7 +19,7 @@
 
 ## 下載與安裝
 
-Windows 安裝檔發佈後：
+安裝步驟：
 
 1. 開啟 [Releases](https://github.com/weihaochiu/LumiPeak/releases)，下載 `PL-Studio-Setup.exe`。
 2. 執行安裝檔，依精靈完成安裝；可選擇建立桌面捷徑。
@@ -62,7 +62,7 @@ Windows 安裝檔發佈後：
 - **啟動檢查**：預設在背景檢查 GitHub 最新正式 Release；發現新版時提供「下載更新」「稍後提醒」「略過此版本」。
 - **手動檢查**：使用 `設定 → 立即檢查更新`，也可關閉「啟動時檢查更新」。手動檢查可顯示先前略過的版本。
 - **更新安裝**：下載新版安裝檔後，先儲存專案並關閉 PL Studio，再執行安裝。
-- **離線與資料**：檢查失敗不影響分析；版本檢查只讀取公開版本資訊，不上傳光譜或專案資料。首個 Release 發佈前，手動檢查可能顯示暫時無法取得更新。
+- **離線與資料**：檢查失敗不影響分析；版本檢查只讀取公開版本資訊，不上傳光譜或專案資料。
 
 ## 分析結果的使用範圍
 
@@ -93,4 +93,4 @@ python -m venv .venv
 - [建置與發佈說明](docs/RELEASING.md)：維護者的打包及發佈流程。
 - [Issues](https://github.com/weihaochiu/LumiPeak/issues)：請提供版本、Windows 版本、操作步驟與錯誤訊息。可附去除私人內容的合成重現資料。
 
-本機已完成安裝、安裝後執行、解除安裝，以及原有 56 項功能與新增 14 項發佈／雙語測試；跨電腦相容性仍需驗證。原始碼授權條款尚未選定。
+本機已完成安裝、安裝後執行、解除安裝，以及原有 56 項功能與新增 14 項發佈／雙語測試；GitHub Actions 清潔環境另有 68 項通過、2 項需本機參考資料的測試略過；跨電腦相容性仍需驗證。原始碼授權條款尚未選定。
