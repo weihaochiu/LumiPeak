@@ -1,0 +1,102 @@
+name: Windows build and release
+on:
+  push:
+    tags: ['v*']
+    branches: [main]
+    paths:
+      - 'plstudio/__init__.py'
+      - '.github/workflows/windows-release.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: windows-release
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore first-publication source archive
+        shell: python
+        run: |
+          from pathlib import Path, PurePosixPath
+          import subprocess
+          import zipfile
+          archive = Path('PL-Studio-source-0.5.0.zip')
+          if archive.exists():
+              workflow = '.github/workflows/windows-release.yml'
+              with zipfile.ZipFile(archive) as bundle:
+                  for entry in bundle.infolist():
+                      name = PurePosixPath(entry.filename)
+                      assert not name.is_absolute() and '..' not in name.parts
+                      target = Path(*name.parts)
+                      content = bundle.read(entry)
+                      if name.as_posix() == workflow:
+                          assert content.decode('utf-8').replace('\r\n', '\n') == target.read_text('utf-8').replace('\r\n', '\n')
+                          continue
+                      target.parent.mkdir(parents=True, exist_ok=True)
+                      target.write_bytes(content)
+              subprocess.run(['git', 'config', 'user.name', 'github-actions[bot]'], check=True)
+              subprocess.run(['git', 'config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com'], check=True)
+              subprocess.run(['git', 'add', '--all'], check=True)
+              subprocess.run(['git', 'rm', '--', str(archive)], check=True)
+              subprocess.run(['git', 'commit', '-m', 'feat: publish bilingual PL Studio source and Windows release pipeline'], check=True)
+              subprocess.run(['git', 'push', 'origin', 'HEAD:main'], check=True)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Install dependencies
+        run: python -m pip install -r requirements-build.txt
+      - name: Configure repository
+        run: python tools/configure_release.py --repository '${{ github.repository }}'
+      - name: Verify release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: python
+        run: |
+          import os
+          from plstudio import __version__
+          assert os.environ['GITHUB_REF_NAME'] == f'v{__version__}', 'Tag must match plstudio.__version__'
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest tests -q
+      - name: Build executable
+        run: python -m PyInstaller --noconfirm PLStudio.spec
+      - name: Verify frozen application
+        shell: pwsh
+        run: |
+          $smokeOutput = Join-Path $PWD 'test_output/frozen'
+          $app = Start-Process -FilePath dist/PL-Studio/PL-Studio.exe -ArgumentList @('--smoke-test', ('"' + $smokeOutput + '"')) -WindowStyle Hidden -PassThru -Wait
+          if ($app.ExitCode -ne 0 -or -not (Test-Path "$smokeOutput/result.json")) { throw 'Frozen application smoke test failed' }
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $compiler = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path -LiteralPath $compiler)) { throw 'Inno Setup is missing from this runner' }
+          $appVersion = python -c "from plstudio import __version__; print(__version__)"
+          & $compiler "/DAppVersion=$appVersion" installer/PLStudio.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
+          Get-FileHash release/PL-Studio-Setup.exe -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  PL-Studio-Setup.exe" } | Set-Content release/SHA256SUMS.txt
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PL-Studio-Windows
+          path: release/*
+      - name: Publish release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $appVersion = python -c "from plstudio import __version__; print(__version__)"
+          $releaseTag = "v$appVersion"
+          gh release view $releaseTag --json tagName 2>$null
+          if ($LASTEXITCODE -eq 0) { Write-Host "Release $releaseTag already exists; preserving its assets."; exit 0 }
+          $sourceCommit = git rev-parse HEAD
+          gh release create $releaseTag release/PL-Studio-Setup.exe release/SHA256SUMS.txt --target $sourceCommit --notes-file docs/release-notes.md --title "PL Studio $releaseTag" --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }
