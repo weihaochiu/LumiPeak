@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.plproj
+build/
+dist/
+test_output/
+*.recovery
+*.log
+.build-tools/
+release/
+# Local experimental data and derived reports are not part of the source release.
+examples/*
+!examples/README.md
+!examples/PL_figure_template.json
