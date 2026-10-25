@@ -11,6 +11,7 @@ from matplotlib.figure import Figure
 
 from .data import FitConfig
 from .figure_style import apply_figure_style, figure_size, save_figure
+from .chart_settings import chart_settings
 
 # metric: UI label, figure label, source, value key, standard-error key, dimensional class
 METRICS = {
@@ -206,13 +207,14 @@ def draw_trends(figure: Figure, spectra, settings=None, font="Arial"):
     axes = []
     for i, key in enumerate(keys):
         ax = figure.add_subplot(grid[i//columns, i % columns])
+        ax._pl_style_key = "trend:"+key
         axes.append(ax)
         rows = [r for r in prepared["rows"] if r["metric"] == key and r["valid"]]
         if prepared["x_mode"] == "numeric" and settings["sort_numeric"]:
             rows.sort(key=lambda r: r["x"])
         xx = [r["x"] for r in rows]
         yy = [r["value"] for r in rows]
-        color = PALETTE[i % len(PALETTE)]
+        color = PALETTE[list(METRICS).index(key) % len(PALETTE)]
         if rows:
             kind = settings.get("plot_type", "dot-line" if settings["connect"] else "dot")
             if kind not in ("dot", "line", "dot-line", "bar", "area"):
@@ -221,9 +223,11 @@ def draw_trends(figure: Figure, spectra, settings=None, font="Arial"):
                 unique = np.unique(xx)
                 spacing = float(np.min(np.diff(unique))) if len(unique) > 1 else 1.0
                 ax.bar(xx, yy, width=settings.get("bar_width", .65)*spacing, color=color, alpha=.85)
+                ax.containers[-1]._pl_style_key = "trend:"+key
             else:
                 ax.plot(xx, yy, marker="o" if kind in ("dot", "dot-line") else "None", markersize=5.5,
                         color=color, lw=settings.get("line_width", 1.6), linestyle="None" if kind == "dot" else "-")
+                ax.lines[-1]._pl_style_key = "trend:"+key
                 if kind == "area":
                     ax.fill_between(xx, yy, color=color, alpha=.25)
             if settings["errorbars"]:
@@ -266,6 +270,9 @@ def draw_trends(figure: Figure, spectra, settings=None, font="Arial"):
 
 def export_trends(path, spectra, settings=None, font="Arial"):
     settings = DEFAULT_TRENDS | (settings or {})
+    if settings["view"] != "overview":
+        settings = chart_settings(settings, "trend:"+settings["view"])
+        font = settings.get("font", font)
     for key in ("width_cm", "height_cm", "dpi", "font_size"):
         if not np.isfinite(settings[key]) or settings[key] <= 0:
             raise ValueError(tr('{0} 必須為正數。').format(key, ''))

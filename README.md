@@ -9,7 +9,7 @@
 [⬇ 下載 Windows 安裝版](https://github.com/weihaochiu/LumiPeak/releases/latest/download/PL-Studio-Setup.exe) · [詳細使用說明](docs/USER_GUIDE.zh-TW.md) · [需求與驗證紀錄](docs/需求紀錄.md) · [問題回報](https://github.com/weihaochiu/LumiPeak/issues)
 
 <!-- DOWNLOAD_STATUS -->
-> **最新正式版：[v0.5.0](https://github.com/weihaochiu/LumiPeak/releases/tag/v0.5.0)** · Windows x64 · 繁體中文／English。
+> **最新正式版：[GitHub Releases](https://github.com/weihaochiu/LumiPeak/releases/latest)** · Windows x64 · 繁體中文／English。
 > 點上方按鈕下載 `PL-Studio-Setup.exe`。安裝包已包含 Python 與必要套件。
 <!-- /DOWNLOAD_STATUS -->
 
@@ -60,7 +60,7 @@
 
 - **切換語言**：`設定 → 語言 / Language → 繁體中文 / English`，立即生效並記住選擇。首次啟動時，中文 Windows 使用繁體中文，其餘語言使用英文。
 - **啟動檢查**：預設在背景檢查 GitHub 最新正式 Release；發現新版時提供「下載更新」「稍後提醒」「略過此版本」。
-- **手動檢查**：使用 `設定 → 立即檢查更新`，也可關閉「啟動時檢查更新」。手動檢查可顯示先前略過的版本。
+- **手動檢查**：使用 `說明 → 立即檢查更新`，也可關閉「啟動時檢查更新」。手動檢查可顯示先前略過的版本。
 - **更新安裝**：下載新版安裝檔後，先儲存專案並關閉 PL Studio，再執行安裝。
 - **離線與資料**：檢查失敗不影響分析；版本檢查只讀取公開版本資訊，不上傳光譜或專案資料。
 

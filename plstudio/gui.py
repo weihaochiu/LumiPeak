@@ -18,20 +18,20 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolb
 from matplotlib.figure import Figure
 from matplotlib.widgets import SpanSelector
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSignalBlocker
-from PySide6.QtGui import QAction, QColor, QFont, QFontDatabase, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QFontDatabase, QKeySequence
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QColorDialog,
     QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout,
-    QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow,
+    QFrame, QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMainWindow,
     QMenu, QMessageBox, QPushButton, QScrollArea, QSpinBox, QSplitter, QStackedWidget,
-    QTabBar, QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit, QToolBar, QStyledItemDelegate,
-    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
+    QTabBar, QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit, QStyledItemDelegate,
+    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QStyle)
 
 from . import __version__
 from .i18n import initialize_language, language, preferences, retranslate_widgets, saved_message, set_language
 from .updates import UpdateChecker, repository
 from .data import (FitConfig, Spectrum, clean_json, import_path, load_project,
                    save_project, transformed, write_json)
-from .exporting import export_excel, export_opju, export_origin_bundle, export_trend_excel
+from .exporting import export_excel, export_image_set, export_opju, export_origin_bundle, export_trend_excel
 from .fitting import (MODELS, FitCancelled, build_model, fit_joint, fit_spectrum,
                       parameter_config, peak_candidates)
 from .plotting import COLORS, DEFAULT_STYLE, draw_spectra, export_figure
@@ -39,6 +39,7 @@ from .trends import DEFAULT_TRENDS, draw_trends, export_trend_set, export_trends
 from .trend_ui import TrendPanel
 from .overlay import DEFAULT_OVERLAY, draw_overlay, export_overlay_files
 from .template_ui import FigureTemplateDialog
+from .chart_group import Chart, FigureGroup, ChartToolbar, render_charts, export_chart_group
 
 ANALYSIS, TRENDS, OVERLAY = 0, 1, 2
 TEMPLATE_STYLE_KEYS = ("width_cm", "height_cm", "dpi", "font", "font_size", "line_width", "legend", "grid")
@@ -145,6 +146,7 @@ class FitWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.spectra: list[Spectrum] = []
         self.current_id = None
         self.project_path = None
@@ -164,7 +166,7 @@ class MainWindow(QMainWindow):
         self.resize(1600, 960)
         self.setMinimumSize(1120, 720)
         self.setAcceptDrops(True)
-        self._build_toolbar()
+        self._build_menus()
         self._build_layout()
         self._style()
         self._build_settings()
@@ -180,17 +182,27 @@ class MainWindow(QMainWindow):
         self.update_timer.start(1500)
 
     def _build_settings(self):
-        menu = self.menuBar().addMenu(tr("設定"))
+        menu = self.settings_menu = self.menuBar().addMenu(tr("設定"))
         languages = menu.addMenu("語言 / Language")
+        self.language_actions = QActionGroup(self)
         for label, value in (("繁體中文", "zh_TW"), ("English", "en")):
             action = languages.addAction(label)
+            action.setCheckable(True)
+            action.setData(value)
+            action.setChecked(value == language())
+            self.language_actions.addAction(action)
             action.triggered.connect(lambda checked=False, value=value: self.change_language(value))
+        menu.addSeparator()
         self.auto_update_action = menu.addAction(tr("啟動時檢查更新"))
         self.auto_update_action.setCheckable(True)
         self.auto_update_action.setChecked(preferences().value("updates/enabled", True, type=bool))
         self.auto_update_action.toggled.connect(lambda value: preferences().setValue("updates/enabled", value))
-        menu.addAction(tr("立即檢查更新"), lambda: self.check_updates(manual=True))
-        menu.addAction(tr("關於 PL Studio"), self.about)
+        help_menu = self.help_menu = self.menuBar().addMenu(tr("說明"))
+        help_action = help_menu.addAction(tr("使用說明"), self.help)
+        help_action.setShortcut(QKeySequence.StandardKey.HelpContents)
+        help_menu.addAction(tr("立即檢查更新…"), lambda: self.check_updates(manual=True))
+        help_menu.addSeparator()
+        help_menu.addAction(tr("關於 PL Studio…"), self.about)
 
     def change_language(self, value):
         if value == language():
@@ -198,6 +210,8 @@ class MainWindow(QMainWindow):
         # Keep pending parameter edits in their existing widgets. Translating
         # presentation text must not commit, reset or validate scientific input.
         set_language(value)
+        for action in self.language_actions.actions():
+            action.setChecked(action.data() == value)
         retranslate_widgets(self)
         self._refresh_tree()
         self.original_filename.setText(tr("原始檔：") + self.current.filename
@@ -281,9 +295,14 @@ class MainWindow(QMainWindow):
             self.ui_font = "Microsoft JhengHei"
         self.setStyleSheet("""
             QMainWindow, QWidget { background: #f4f7fa; color: #20354a; font-family: 'UI_FONT'; font-size: 12px; }
-            QToolBar#mainToolBar { background: #173b5a; spacing: 8px; padding: 7px; border: none; }
-            QToolBar#mainToolBar QToolButton { background: transparent; color: white; padding: 7px 9px; border-radius: 4px; }
-            QToolBar#mainToolBar QToolButton:hover { background: #2b5575; }
+            QMenuBar { background: #ffffff; padding: 3px 8px; border-bottom: 1px solid #e1e7ee; }
+            QMenuBar::item { background: transparent; padding: 5px 12px; border-radius: 4px; }
+            QMenuBar::item:selected, QMenuBar::item:pressed { background: #e6eff8; color: #145b9b; }
+            QMenu { background: #ffffff; border: 1px solid #d5dfe8; padding: 5px; }
+            QMenu::item { padding: 7px 28px 7px 12px; border-radius: 3px; }
+            QMenu::item:selected { background: #e6eff8; color: #145b9b; }
+            QMenu::item:disabled { color: #9caab5; }
+            QMenu::separator { height: 1px; background: #e1e7ee; margin: 5px 8px; }
             QGroupBox { border: 1px solid #d6e0e9; border-radius: 6px; margin-top: 14px; padding: 10px; font-weight: bold; }
             QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 4px; }
             QPushButton { background: white; border: 1px solid #c9d6e2; border-radius: 4px; padding: 6px 9px; }
@@ -298,33 +317,59 @@ class MainWindow(QMainWindow):
             QStatusBar { background: #e6edf4; }
         """.replace("UI_FONT", self.ui_font))
 
-    def _action(self, label, slot, shortcut=None):
+    def _action(self, label, slot, shortcut=None, icon=None, tip=None):
         action = QAction(label, self)
-        action.triggered.connect(slot)
+        action.triggered.connect(lambda checked=False: slot())
         if shortcut:
             action.setShortcut(shortcut)
-        self.toolbar.addAction(action)
+        if icon is not None:
+            action.setIcon(self.style().standardIcon(icon))
+        action.setToolTip(tip or label)
+        action.setStatusTip(tip or label)
+        self.command_actions.append(action)
         return action
 
-    def _build_toolbar(self):
-        self.toolbar = QToolBar(tr("專案與匯出"))
-        self.toolbar.setObjectName("mainToolBar")
-        self.toolbar.setMovable(False)
-        self.addToolBar(self.toolbar)
-        self._action(tr("新增專案"), self.new_project, "Ctrl+N")
-        self._action(tr("開啟專案"), self.open_project, "Ctrl+O")
-        self._action(tr("儲存"), self.save, "Ctrl+S")
-        self._action(tr("另存新檔"), lambda: self.save(True), "Ctrl+Shift+S")
-        self.toolbar.addSeparator()
-        self._action(tr("匯入 TXT / ZIP"), self.import_files, "Ctrl+I")
-        self.toolbar.addSeparator()
-        self._action("Figure Template", self.open_figure_template, "Ctrl+T")
-        self._action(tr("匯出圖片"), self.export_image)
-        self._action(tr("匯出 Excel"), self.export_xlsx)
-        self._action(tr("Origin 資料包"), self.export_origin).setToolTip(tr("匯出資料及基本圖形腳本；目前不轉換 Figure Template 樣式。"))
-        self._action("Origin .opju", self.export_origin_project).setToolTip(tr("需 Origin 授權；目前只建立資料與基本曲線，未同步 Figure Template。"))
-        self.toolbar.addSeparator()
-        self._action(tr("使用說明"), self.help)
+    def _build_menus(self):
+        self.command_actions = []
+        self.file_menu = self.menuBar().addMenu(tr("檔案"))
+        self.figure_menu = self.menuBar().addMenu(tr("圖形"))
+        self.new_action = self._action(tr("新增專案"), self.new_project, "Ctrl+N", QStyle.StandardPixmap.SP_FileIcon)
+        self.open_action = self._action(tr("開啟專案…"), self.open_project, "Ctrl+O", QStyle.StandardPixmap.SP_DialogOpenButton,
+            tr("開啟 PL 專案或自動復原檔。"))
+        self.save_action = self._action(tr("儲存專案"), self.save, "Ctrl+S", QStyle.StandardPixmap.SP_DialogSaveButton,
+            tr("儲存原始資料、擬合紀錄與圖形設定。"))
+        self.save_as_action = self._action(tr("另存新檔…"), lambda: self.save(True), "Ctrl+Shift+S")
+        self.import_action = self._action(tr("匯入資料…"), self.import_files, "Ctrl+I", QStyle.StandardPixmap.SP_ArrowDown,
+            tr("匯入 TXT、CSV、DAT、TSV 或 ZIP 光譜資料；也可拖曳檔案到視窗。"))
+        self.template_action = self._action(tr("圖形版面設定（Figure Template）…"), self.open_figure_template, "Ctrl+T", QStyle.StandardPixmap.SP_FileDialogContentsView)
+        for action in (self.new_action, self.open_action):
+            self.file_menu.addAction(action)
+        self.file_menu.addSeparator()
+        for action in (self.save_action, self.save_as_action):
+            self.file_menu.addAction(action)
+        self.file_menu.addSeparator()
+        self.file_menu.addAction(self.import_action)
+        self.export_menu = QMenu(tr("匯出"), self)
+        self.export_menu.addAction(self._action(tr("圖片…"), self.export_image, icon=QStyle.StandardPixmap.SP_FileIcon,
+            tip=tr("選擇資料夾，分別儲存勾選 DATA 的 PL 圖、絕對值與 Normalized 疊圖及所有勾選趨勢圖。")))
+        self.export_menu.addAction(self._action("Excel…", self.export_xlsx))
+        self.export_menu.addSeparator()
+        self.export_menu.addAction(self._action(tr("Origin 資料包…"), self.export_origin,
+            tip=tr("匯出資料及基本圖形腳本；目前不轉換 Figure Template 樣式。")))
+        self.export_menu.addAction(self._action(tr("Origin 專案（.opju）…"), self.export_origin_project,
+            tip=tr("需 Origin 授權；目前只建立資料與基本曲線，未同步 Figure Template。")))
+        self.file_menu.addMenu(self.export_menu)
+        self.file_menu.addSeparator()
+        self.file_menu.addAction(tr("結束"), self.close)
+        self.figure_menu.addAction(self.template_action)
+        self.figure_menu.addSeparator()
+        self.figure_menu.addAction(self._action(tr("載入圖形模板…"), lambda: self._template_file_dialog(False)))
+        self.figure_menu.addAction(self._action(tr("儲存圖形模板…"), lambda: self._template_file_dialog(True)))
+
+    def _set_commands_enabled(self, enabled):
+        # Guard menu entries and keyboard shortcuts during a fit.
+        for action in self.command_actions:
+            action.setEnabled(enabled)
 
     def _button(self, text, slot, layout, primary=False):
         button = QPushButton(text)
@@ -403,9 +448,10 @@ class MainWindow(QMainWindow):
         chart_layout.addWidget(self.chart_info)
         self.figure = Figure(figsize=(8, 5), facecolor="white")
         self.canvas = FigureCanvasQTAgg(self.figure)
-        self.navigation = NavigationToolbar2QT(self.canvas, self)
-        chart_layout.addWidget(self.navigation)
-        chart_layout.addWidget(self.canvas, 1)
+        self.navigation = ChartToolbar(self.canvas, self)
+        self.chart_group = FigureGroup(self.canvas, navigation=self.navigation)
+        self.chart_figures = [self.figure]
+        chart_layout.addWidget(self.chart_group, 1)
         self.canvas.mpl_connect("button_press_event", self._canvas_click)
         vertical.addWidget(chart)
         self.tables = QTabWidget()
@@ -626,6 +672,14 @@ class MainWindow(QMainWindow):
         self.template_dialog.raise_()
         self.template_dialog.activateWindow()
 
+    def _template_file_dialog(self, save):
+        # Use the same per-figure editor and v2 file format as Figure Template.
+        self.open_figure_template()
+        if save:
+            self.template_dialog.save_dialog()
+        else:
+            self.template_dialog.load_dialog()
+
     def _template_payload(self):
         return self.template_dialog.active_kind, self.template_dialog.read_settings()
 
@@ -633,12 +687,8 @@ class MainWindow(QMainWindow):
         self.template_dialog.preview()
 
     def _render_template_preview(self, figure, target, settings):
-        if target == "trends":
-            draw_trends(figure, self.spectra, settings, settings.get("font", self.ui_font))
-        elif target == "overlay":
-            draw_overlay(figure, self.spectra, settings)
-        else:
-            draw_spectra(figure, [s for s in self.spectra if s.plot], settings)
+        charts, _ = render_charts(figure, target, self.spectra, settings)
+        return charts
 
     def apply_figure_template(self, all_targets=False):
         self.template_dialog.apply(all_targets)
@@ -660,17 +710,10 @@ class MainWindow(QMainWindow):
     def export_template_preview(self):
         try:
             target, settings = self._template_payload()
-            path, _ = QFileDialog.getSaveFileName(self.template_dialog, tr("匯出 Figure Template 預覽"), "PL_figure.png",
-                "PNG (*.png);;JPEG (*.jpg);;PDF (*.pdf);;SVG (*.svg)")
-            if path:
-                if target == "trends":
-                    export_trends(path, self.spectra, settings, settings["font"])
-                elif target == "overlay":
-                    from .overlay import export_overlay
-                    export_overlay(path, self.spectra, settings)
-                else:
-                    export_figure(path, [s for s in self.spectra if s.plot], settings)
-                self.statusBar().showMessage(tr('圖形已匯出：{1}').format('', path))
+            directory = QFileDialog.getExistingDirectory(self.template_dialog, tr("選擇圖片輸出資料夾"))
+            if directory:
+                paths = export_chart_group(directory, target, self.spectra, settings)
+                self.statusBar().showMessage(tr("已分別匯出 {0} 張圖片至：{1}").format(len(paths), directory))
         except Exception as exc:
             self._error(exc)
 
@@ -1235,7 +1278,7 @@ class MainWindow(QMainWindow):
             self.worker.finished.connect(self._fit_finished)
             self.right.setEnabled(False)
             self.left.setEnabled(False)
-            self.toolbar.setEnabled(False)
+            self._set_commands_enabled(False)
             self.mode.setEnabled(False)
             self.cancel_button.setEnabled(True)
             self.worker.start()
@@ -1259,7 +1302,7 @@ class MainWindow(QMainWindow):
         self.worker = None
         self.right.setEnabled(True)
         self.left.setEnabled(True)
-        self.toolbar.setEnabled(True)
+        self._set_commands_enabled(True)
         self.mode.setEnabled(True)
         self.cancel_button.setEnabled(False)
         self._load_controls()
@@ -1384,8 +1427,9 @@ class MainWindow(QMainWindow):
 
     def _draw_trends(self):
         settings = self.trend_panel.settings()
-        axes, prepared = draw_trends(self.figure, self.spectra, settings, settings.get("font", self.ui_font))
-        self.axes, self.residual_axes = axes[0], None
+        charts, prepared = render_charts(self.figure, "trends", self.spectra, settings)
+        self._show_chart_group(charts, settings)
+        self.axes, self.residual_axes = charts[0].figure.axes[0], None
         valid_ids = {r["spectrum_id"] for r in prepared["rows"] if r["valid"]}
         text = (tr('Condition vs 擬合結果 | 納入 {1} / {3} 條光譜 | 每條光譜一個點；結果依保存的擬合版本。').format('', len(valid_ids), '', prepared['spectrum_count'], ''))
         if prepared["messages"]:
@@ -1402,6 +1446,9 @@ class MainWindow(QMainWindow):
     def export_trend_image(self):
         try:
             settings = self.trend_panel.settings()
+            if settings["view"] == "overview":
+                self.export_all_trend_images()
+                return
             path, _ = QFileDialog.getSaveFileName(self, tr("匯出目前參數趨勢圖"), "PL_condition_trends.png",
                 "PNG (*.png);;JPEG (*.jpg);;PDF (*.pdf);;SVG (*.svg)")
             if path:
@@ -1447,7 +1494,10 @@ class MainWindow(QMainWindow):
                 return
             if self.mode.currentIndex() == OVERLAY:
                 settings = self._read_overlay_inputs()
-                self.axes, self.residual_axes = draw_overlay(self.figure, self.spectra, settings)
+                charts, _ = render_charts(self.figure, "overlay", self.spectra, settings)
+                self._show_chart_group(charts, settings)
+                self.axes = charts[0].figure.axes[0]
+                self.residual_axes = charts[1].figure.axes[0] if len(charts) > 1 else None
                 count = sum(s.plot for s in self.spectra)
                 label = {"raw": tr("原始 Intensity（Counts）"), "normalized": "Normalized intensity（I / Imax）",
                          "both": tr("原始 Intensity + Normalized intensity")}[settings["intensity"]]
@@ -1479,6 +1529,7 @@ class MainWindow(QMainWindow):
                             spectrum.result = None
                     spectra = [spectrum]
             self.axes, self.residual_axes = draw_spectra(self.figure, spectra, style, analysis, self.preview)
+            self._show_chart_group([Chart("analysis", self.current.name if self.current else tr("尚未匯入資料"), self.figure, style)], style)
             if analysis and self.current:
                 cfg = self.current.config
                 if cfg.xmin is not None:
@@ -1508,8 +1559,13 @@ class MainWindow(QMainWindow):
             ax.text(.5, .5, ("Parameter trend unavailable: check Condition and metric settings" if is_trend
                              else "Plot unavailable: check coordinate and normalization settings"),
                     ha="center", va="center", transform=ax.transAxes, wrap=True)
+            self._show_chart_group([Chart("error", tr("設定需調整"), self.figure, DEFAULT_STYLE)], {})
             self.canvas.draw_idle()
             self.statusBar().showMessage(str(exc))
+
+    def _show_chart_group(self, charts, settings):
+        self.chart_figures = [chart.figure for chart in charts]
+        self.chart_group.set_charts(charts, settings.get("figure_options", {}).get("columns", 0))
 
     def _plot_key_press(self, event):
         if event.key == "shift" and hasattr(self, "span") and self.mode.currentIndex() == 0:
@@ -1780,25 +1836,28 @@ class MainWindow(QMainWindow):
         return selected
 
     def export_image(self):
-        if self.mode.currentIndex() == TRENDS:
-            self.export_trend_image()
-            return
-        if self.mode.currentIndex() == OVERLAY:
-            self.export_overlay_image()
-            return
         try:
             self._commit()
             style = self._read_plot_inputs()
             selected = [s for s in self.spectra if s.plot]
             if not selected:
                 raise ValueError(tr("請先在左側勾選要作圖的資料。"))
-            path, _ = QFileDialog.getSaveFileName(self, tr("匯出論文作圖"), "PL_figure.png",
-                "PNG (*.png);;JPEG (*.jpg);;PDF (*.pdf);;SVG (*.svg)")
-            if path:
-                export_figure(path, selected, style)
-                self.plot_settings = style
-                self.mark_dirty()
-                self.statusBar().showMessage(tr('圖形已匯出：{1}').format('', path))
+            extension, accepted = QInputDialog.getItem(self, tr("匯出圖片"),
+                tr("每筆勾選 DATA 各一張 PL 圖、兩張疊圖及每個勾選趨勢指標各一張圖。\n圖片格式："),
+                ["png", "jpg", "pdf", "svg"], 0, False)
+            if not accepted:
+                return
+            directory = QFileDialog.getExistingDirectory(self, tr("選擇圖片輸出資料夾"))
+            if not directory:
+                return
+            paths, skipped = export_image_set(directory, selected, style, extension)
+            self.plot_settings = style
+            self.mark_dirty()
+            text = tr("已分別匯出 {0} 張圖片至：{1}").format(len(paths), directory)
+            if skipped:
+                text += tr("\n以下圖形無法繪製，已略過：\n") + "\n".join(skipped)
+            self.statusBar().showMessage(text)
+            QMessageBox.information(self, tr("圖片匯出結果"), text)
         except Exception as exc:
             self._error(exc)
 
@@ -1881,6 +1940,9 @@ class MainWindow(QMainWindow):
             return
         if self._maybe_save():
             self.shutting_down = True
+            self.chart_group.pause_drawing()
+            self.template_dialog.preview_group.pause_drawing()
+            self.autosave_timer.stop()
             self.update_timer.stop()
             self.update_checker.cancel()
             event.accept()

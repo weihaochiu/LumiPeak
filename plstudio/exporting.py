@@ -5,6 +5,7 @@ from .i18n import tr
 import csv
 import io
 import json
+import re
 import zipfile
 from pathlib import Path
 
@@ -13,6 +14,68 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from .data import FitConfig, clean_json, intensity_label
+
+
+def _available_image_path(directory, stem, extension):
+    path = directory / f"{stem}.{extension}"
+    number = 2
+    while path.exists():
+        path = directory / f"{stem}_{number}.{extension}"
+        number += 1
+    return path
+
+
+def export_image_set(directory, spectra, settings=None, extension="png"):
+    """Export checked spectra, both overlays and each checked trend separately.
+
+    Existing files are preserved. Unavailable charts are reported to the caller
+    so unfitted data can still be exported as PL spectra and overlays.
+    """
+    from .overlay import export_overlay
+    from .plotting import export_figure
+    from .trends import DEFAULT_TRENDS, METRICS, export_trends, selected_metrics
+
+    if extension not in ("png", "jpg", "pdf", "svg"):
+        raise ValueError(tr("不支援的圖形格式。"))
+    selected = [s for s in spectra if s.plot]
+    if not selected:
+        raise ValueError(tr("請先在左側勾選要作圖的資料。"))
+    settings = settings or {}
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    paths, skipped = [], []
+
+    def save(stem, label, writer):
+        path = _available_image_path(directory, stem, extension)
+        try:
+            writer(path)
+        except ValueError as exc:
+            skipped.append(f"{label}：{exc}")
+        else:
+            paths.append(path)
+
+    for index, spectrum in enumerate(selected, 1):
+        # The index keeps duplicate names distinct and avoids Windows device names.
+        name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", spectrum.name).strip(" .")[:80] or "DATA"
+        save(f"PL_{index:03d}_{name}", spectrum.name,
+             lambda path, s=spectrum: export_figure(path, [s], settings | {"fit_summary": True}))
+
+    overlay = settings.get("overlay", {})
+    for mode, suffix in (("raw", "intensity"), ("normalized", "normalized")):
+        save(f"PL_overlay_{suffix}", f"PL overlay ({suffix})",
+             lambda path, mode=mode: export_overlay(path, selected, overlay | {"intensity": mode}))
+
+    trends = DEFAULT_TRENDS | settings.get("trends", {})
+    try:
+        keys = selected_metrics(trends, overview=True)
+    except ValueError as exc:
+        skipped.append(str(exc))
+        keys = []
+    for key in keys:
+        save(f"Peak_{trends['peak']}_{key}", tr(METRICS[key][0]),
+             lambda path, key=key: export_trends(path, selected, trends | {"view": key},
+                                                trends.get("font", settings.get("font", "Arial"))))
+    return paths, skipped
 
 
 def _identity(spectrum):

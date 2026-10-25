@@ -9,7 +9,7 @@ One application includes Traditional Chinese and English with immediate language
 [⬇ Download for Windows](https://github.com/weihaochiu/LumiPeak/releases/latest/download/PL-Studio-Setup.exe) · [User guide](docs/USER_GUIDE.en.md) · [Requirements and verification log](docs/需求紀錄.md) · [Report an issue](https://github.com/weihaochiu/LumiPeak/issues)
 
 <!-- DOWNLOAD_STATUS -->
-> **Latest stable release: [v0.5.0](https://github.com/weihaochiu/LumiPeak/releases/tag/v0.5.0)** · Windows x64 · Traditional Chinese / English.
+> **Latest stable release: [GitHub Releases](https://github.com/weihaochiu/LumiPeak/releases/latest)** · Windows x64 · Traditional Chinese / English.
 > Download `PL-Studio-Setup.exe` using the button above. The installer includes Python and required libraries.
 <!-- /DOWNLOAD_STATUS -->
 
@@ -60,7 +60,7 @@ Left-hand checkboxes control plot content. Ctrl / Shift highlighting selects dat
 
 - **Language:** `Settings → 語言 / Language → English / 繁體中文`. Changes apply immediately and are remembered. On first launch, Chinese Windows uses Traditional Chinese; other system languages use English.
 - **Startup checks:** background checks look for newer stable GitHub Releases and offer Download update, Remind me later and Skip this version.
-- **Manual checks:** use `Settings → Check for updates now`, or disable startup checks. Manual checks can show previously skipped versions.
+- **Manual checks:** use `Help → Check for updates now`, or disable startup checks. Manual checks can show previously skipped versions.
 - **Installing updates:** save your project and close PL Studio before running the downloaded installer.
 - **Offline access and data:** failed checks do not interrupt analysis. Checks retrieve public version information without uploading spectra or project data.
 

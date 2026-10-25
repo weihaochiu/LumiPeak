@@ -13,10 +13,15 @@ from matplotlib.figure import Figure
 from PySide6.QtCore import Qt, Signal, QSignalBlocker
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
     QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea,
-    QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
+    QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
+    QTreeWidget, QTreeWidgetItem, QStackedWidget)
 
 from .data import write_json
-from .figure_style import DEFAULT_OPTIONS, validate_options
+from .figure_style import DEFAULT_OPTIONS, validate_options, plot_items, layer_key
+from .origin_format import (PropertyTabs, LAYER_SECTIONS, PLOT_SECTIONS, AxisDialog,
+                            axis_defaults, ColorEdit, AXIS_SIDES, axis_direction, PAGE_SECTIONS)
+from .chart_group import FigureGroup, Chart
+from .chart_settings import chart_settings, validate_chart_styles
 from .plotting import DEFAULT_STYLE
 from .trends import DEFAULT_TRENDS, METRICS
 from .trend_ui import update_position_choices
@@ -32,6 +37,7 @@ SECTIONS = {
         ("columns", "多面板欄數（0＝自動）", int), ("left", "左邊界（頁面比例）", float),
         ("right", "右邊界", float), ("bottom", "下邊界", float), ("top", "上邊界", float),
         ("hspace", "面板上下間距", float), ("wspace", "面板左右間距", float),
+        ("share_x", "連結疊圖 X 軸", bool),
         ("panel_labels", "面板編號", bool), ("panel_label_style", "編號形式", ["a", "A", "1"]),
         ("panel_label_x", "編號 X 位置（圖層比例）", float), ("panel_label_y", "編號 Y 位置", float)],
     "座標軸": [
@@ -91,7 +97,7 @@ class FigureTemplateDialog(QDialog):
 
     def __init__(self, parent, preview_callback):
         super().__init__(parent)
-        self.setWindowTitle(tr("Figure Template — 各圖型設定與模板"))
+        self.setWindowTitle(tr("Plot Details — 圖片設定"))
         self.resize(1400, 900)
         self.preview_callback = preview_callback
         self.loading = False
@@ -99,6 +105,11 @@ class FigureTemplateDialog(QDialog):
         self.active_kind = None
         self.widgets, self.option_widgets = {}, {}
         self.field_labels = {}
+        self.forms = {}
+        self.scope = None
+        self.scope_layers = {}
+        self.chart_styles = {}
+        self.tree_signature = None
         layout = QVBoxLayout(self)
         top = QHBoxLayout()
         top.addWidget(QLabel(tr("圖型")))
@@ -111,14 +122,46 @@ class FigureTemplateDialog(QDialog):
         top.addStretch()
         layout.addLayout(top)
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.object_tree = QTreeWidget()
+        self.object_tree.setHeaderLabel(tr("Page / Layer / Plot"))
+        self.object_tree.setMinimumWidth(200)
+        self.object_tree.currentItemChanged.connect(self._select_object)
+        self.object_tree.itemChanged.connect(self._object_visibility)
+        splitter.addWidget(self.object_tree)
         self.figure = Figure(figsize=(8, 6), facecolor="white")
         self.canvas = FigureCanvasQTAgg(self.figure)
-        splitter.addWidget(self.canvas)
+        self.preview_figures = [self.figure]
+        self.preview_charts = []
+        self.preview_group = FigureGroup(self.canvas, self._preview_double_click)
         self.tabs = QTabWidget()
-        splitter.addWidget(self.tabs)
-        splitter.setSizes([830, 540])
+        self.editor_stack = QStackedWidget()
+        self.editor_stack.addWidget(self.tabs)
+        self.layer_editor = PropertyTabs(LAYER_SECTIONS)
+        self.plot_editor = PropertyTabs(PLOT_SECTIONS)
+        self.page_editor = PropertyTabs(PAGE_SECTIONS)
+        self.layer_editor.changed.connect(self.preview)
+        self.plot_editor.changed.connect(self.preview)
+        self.page_editor.changed.connect(self.preview)
+        self.editor_stack.addWidget(self.layer_editor)
+        self.editor_stack.addWidget(self.plot_editor)
+        self.editor_stack.addWidget(self.page_editor)
+        controls = QWidget()
+        controls_layout = QVBoxLayout(controls)
+        self.selection_label = QLabel()
+        controls_layout.addWidget(self.selection_label)
+        self.axes_button = QPushButton(tr("Axes..."))
+        self.axes_button.clicked.connect(self.open_axes)
+        controls_layout.addWidget(self.axes_button)
+        controls_layout.addWidget(self.editor_stack, 1)
+        self.reset_button = QPushButton(tr("重設選取物件格式"))
+        self.reset_button.clicked.connect(self.reset_object)
+        controls_layout.addWidget(self.reset_button)
+        splitter.addWidget(controls)
+        splitter.addWidget(self.preview_group)
+        splitter.setSizes([240, 580, 580])
+        self.canvas.mpl_connect("button_press_event", self._preview_double_click)
         layout.addWidget(splitter, 1)
-        base = self._tab(tr("基本／內容"))
+        base = self._tab("基本／內容")
         for key, label, typ in (
             ("width_cm", tr("寬 cm"), float), ("height_cm", tr("高 cm"), float), ("dpi", "DPI", int),
             ("font", tr("字型"), str), ("font_size", tr("基本字級 pt"), float), ("line_width", tr("線寬 pt"), float),
@@ -127,7 +170,7 @@ class FigureTemplateDialog(QDialog):
             ("xmax", tr("X 上限"), "optional"), ("ymin", tr("Y 下限（單面板）"), "optional"),
             ("ymax", tr("Y 上限"), "optional"), ("legend", tr("顯示圖例"), bool), ("grid", tr("顯示主格線"), bool)):
             self.widgets[key] = self._field(base, key, label, typ)
-        self.content = self._tab(tr("圖型專用"))
+        self.content = self._tab("圖型專用")
         self.specific_widgets = {}
         for key, label, typ in (
             ("raw", tr("原始光譜"), bool), ("fit", tr("總擬合線"), bool), ("components", tr("分峰線"), bool),
@@ -158,14 +201,33 @@ class FigureTemplateDialog(QDialog):
             form = self._tab(title)
             for key, label, typ in fields:
                 self.option_widgets[key] = self._field(form, key, label, typ)
+        # Keep page dimensions at page level and axis content with common axes.
+        for key, target in {"title": "Legends/Titles", "legend": "Legends/Titles", "line_width": "Group",
+                            "xlabel": "Axes", "ylabel": "Axes", "xmin": "Axes", "xmax": "Axes",
+                            "ymin": "Axes", "ymax": "Axes", "grid": "Ticks / Grids"}.items():
+            row = base.takeRow(self.widgets[key])
+            self.forms[target].addRow(row.labelItem.widget(), row.fieldItem.widget())
         self.tables = {}
         self._object_table(tr("文字／箭頭"), "annotations", [tr("面板"), tr("文字"), "X", "Y", tr("箭頭目標 X"), tr("箭頭目標 Y"), tr("座標 axes/data"), tr("顏色"), tr("字級")])
         self._object_table(tr("形狀"), "shapes", [tr("面板"), "rectangle/ellipse", "X", "Y", tr("寬"), tr("高"), tr("座標 axes/data"), tr("填色"), tr("邊色"), tr("不透明度")])
         self._object_table(tr("各面板覆寫"), "layers", [tr("面板"), tr("X 下限"), tr("X 上限"), tr("Y 下限"), tr("Y 上限"), tr("X 標題"), tr("Y 標題"), tr("圖標題"), tr("位置 L"), tr("位置 B"), tr("位置 W"), tr("位置 H")])
         row = QHBoxLayout()
-        for label, slot in ((tr("更新預覽"), self.preview), (tr("套用此圖設定"), lambda: self.apply(False)),
+        self.copy_axis_content = QCheckBox(tr("套用每張圖時包含座標範圍與標題"))
+        scope_row = QHBoxLayout()
+        scope_row.addWidget(QLabel(tr("套用範圍")))
+        self.apply_scope = QComboBox()
+        self.apply_scope.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.apply_scope.addItem(tr("目前圖組的每張圖"), "current")
+        self.apply_scope.addItem(tr("全部圖型的每張圖"), "all")
+        scope_row.addWidget(self.apply_scope)
+        scope_row.addWidget(self.copy_axis_content)
+        scope_row.addStretch()
+        layout.addLayout(scope_row)
+        for label, slot in ((tr("OK"), self._accept_settings), (tr("Cancel"), self.close),
+                            (tr("Apply"), lambda: self.apply(False)),
+                            (tr("套用到每張圖"), self.apply_each_chart),
                             (tr("套用全部圖型設定"), lambda: self.apply(True)), (tr("儲存設定檔"), self.save_dialog),
-                            (tr("載入設定檔"), self.load_dialog), (tr("關閉"), self.close)):
+                            (tr("載入設定檔"), self.load_dialog)):
             button = QPushButton(label)
             button.clicked.connect(lambda checked=False, callback=slot: callback())
             row.addWidget(button)
@@ -173,12 +235,29 @@ class FigureTemplateDialog(QDialog):
         self.notice = QLabel(tr("顏色可填名稱或 #RRGGBB；文字支援 Unicode 與 Matplotlib 數學標記。"))
         self.notice.setWordWrap(True)
         layout.addWidget(self.notice)
+        self.axes_button.setEnabled(False)
+        self.reset_button.setEnabled(False)
+        self.widgets["font_size"].valueChanged.connect(self._base_font_changed)
+
+    def _base_font_changed(self, value):
+        if self.loading:
+            return
+        for key in ("x_label_size", "y_label_size", "title_size", "tick_size", "legend_size"):
+            widget = self.option_widgets[key]
+            blocker = QSignalBlocker(widget)
+            widget.setValue(value*.85 if key == "legend_size" else value)
+            del blocker
+        self.preview()
 
     def _tab(self, title):
+        title = {"基本／內容": "Print/Dimensions", "圖型專用": "Plot Content", "頁面／圖層": "Layers",
+                 "座標軸": "Axes", "刻度／格線": "Ticks / Grids", "線條／符號": "Group",
+                 "圖例": "Legends/Titles", "參考線／Inset": "Inset", "輸出": "Export"}.get(title, title)
         area = QScrollArea()
         area.setWidgetResizable(True)
         widget = QWidget()
         form = QFormLayout(widget)
+        self.forms[title] = form
         area.setWidget(widget)
         self.tabs.addTab(area, tr(title))
         return form
@@ -198,7 +277,7 @@ class FigureTemplateDialog(QDialog):
                 widget.setDecimals(3)
             widget.valueChanged.connect(self.preview)
         else:
-            widget = QLineEdit()
+            widget = ColorEdit() if "color" in key or key in ("marker_face", "marker_edge", "bar_edge", "legend_face", "legend_edge") else QLineEdit()
             widget.editingFinished.connect(self.preview)
         widget.setProperty("field_type", "array" if typ is list else "optional" if typ == "optional" else "text")
         form.addRow(tr(label), widget)
@@ -293,6 +372,18 @@ class FigureTemplateDialog(QDialog):
 
     def _load_form(self, settings):
         self.loading = True
+        if hasattr(self, "axis_dialog"):
+            self.axis_dialog.close()
+        self.scope = None
+        self.scope_layers = copy.deepcopy(settings.get("figure_options", {}).get("layers", {}))
+        self.chart_styles = copy.deepcopy(settings.get("chart_styles", {}))
+        self.layer_table_snapshot = {str(k): {field: copy.deepcopy(v) for field, v in record.items()
+                                    if field in ("xlim", "ylim", "position", "xlabel", "ylabel", "title")}
+                                    for k, record in self.scope_layers.items() if str(k).isdigit()}
+        self.tree_signature = None
+        self.layer_editor.dirty.clear()
+        self.plot_editor.dirty.clear()
+        self.page_editor.dirty.clear()
         defaults = DEFAULT_STYLE | DEFAULT_OVERLAY | DEFAULT_TRENDS | settings
         options = validate_options(settings.get("figure_options", {}))
         for key, widget in self.widgets.items():
@@ -318,6 +409,8 @@ class FigureTemplateDialog(QDialog):
                                       a.get("width", .2), a.get("height", .2), a.get("coords", "axes"),
                                       a.get("face", "none"), a.get("edge", "black"), a.get("alpha", .5)])
         for layer, a in options["layers"].items():
+            if not str(layer).isdigit():
+                continue  # Named layers are edited in the object tree.
             records["layers"].append([layer, *a.get("xlim", ["", ""]), *a.get("ylim", ["", ""]),
                                       a.get("xlabel", ""), a.get("ylabel", ""), a.get("title", ""), *a.get("position", ["", "", "", ""])])
         for key, table in self.tables.items():
@@ -355,7 +448,9 @@ class FigureTemplateDialog(QDialog):
             settings["metrics"] = [key for key, check in self.metric_checks.items() if check.isChecked()]
             settings["connect"] = settings["plot_type"] in ("line", "dot-line", "area")
         options = {key: self._get(widget) for key, widget in self.option_widgets.items()}
-        options.update(annotations=[], shapes=[], layers={})
+        self._commit_scope()
+        options.update(annotations=[], shapes=[], layers=copy.deepcopy(self.scope_layers))
+        table_layers = {}
         for key, table in self.tables.items():
             for row in range(table.rowCount()):
                 cells = [table.item(row, c).text().strip() if table.item(row, c) else "" for c in range(table.columnCount())]
@@ -379,9 +474,364 @@ class FigureTemplateDialog(QDialog):
                         if any(cells[start:start+length]):
                             record[name] = [float(v) for v in cells[start:start+length]]
                     record.update({name: cells[i] for i, name in ((5, "xlabel"), (6, "ylabel"), (7, "title")) if cells[i]})
-                    options[key][str(layer)] = record
+                    table_layers[str(layer)] = record
+        for layer in self.layer_table_snapshot.keys() | table_layers.keys():
+            before = self.layer_table_snapshot.get(layer, {})
+            after = table_layers.get(layer, {})
+            for field in before.keys() | after.keys():
+                if before.get(field) != after.get(field):
+                    record = options["layers"].setdefault(layer, {})
+                    if field in after:
+                        record[field] = after[field]
+                    else:
+                        record.pop(field, None)
         settings["figure_options"] = validate_options(options)
+        settings["chart_styles"] = copy.deepcopy(self.chart_styles)
+        validate_chart_styles(settings)
+        self.layer_table_snapshot = table_layers
+        self.scope_layers = copy.deepcopy(options["layers"])
         return settings
+
+    def _commit_scope(self):
+        if not self.scope:
+            return
+        level, layer, plot = self.scope
+        if level == "chart":
+            patch = self.page_editor.values(True)
+            if patch:
+                record = self.chart_styles.setdefault(layer, {})
+                if "font_size" in patch:
+                    for key in ("x_label_size", "y_label_size", "title_size", "tick_size", "legend_size"):
+                        record.setdefault("figure_options", {})[key] = patch["font_size"]*(.85 if key == "legend_size" else 1)
+                for key in ("orientation", "page_color"):
+                    if key in patch:
+                        record.setdefault("figure_options", {})[key] = patch.pop(key)
+                record.update(patch)
+            return
+        if level == "layer":
+            patch = self.layer_editor.values(True)
+            if not patch:
+                return
+            record = self.scope_layers.setdefault(layer, copy.deepcopy(self._scope_record(layer)))
+            for key in ("title", "legend"):
+                if key in patch:
+                    record[key] = patch.pop(key)
+            if set(patch) & {"manual_position", "left", "top", "width", "height"}:
+                values = self.layer_editor.values()
+                if values["manual_position"]:
+                    record["position"] = [values["left"]/100, 1-(values["top"]+values["height"])/100,
+                                          values["width"]/100, values["height"]/100]
+                else:
+                    record.pop("position", None)
+            for key in ("manual_position", "left", "top", "width", "height"):
+                patch.pop(key, None)
+            if patch:
+                record.setdefault("options", {}).update(patch)
+        elif level == "plot":
+            patch = self.plot_editor.values(True)
+            if patch:
+                self.scope_layers.setdefault(layer, copy.deepcopy(self._scope_record(layer))).setdefault("plots", {}).setdefault(plot, {}).update(patch)
+
+    def _all_axes(self):
+        return [(chart, i, ax) for chart in self.preview_charts for i, ax in enumerate(chart.figure.axes, 1)]
+
+    def _scope_record(self, key):
+        if key in self.scope_layers:
+            return self.scope_layers[key]
+        for chart, index, ax in self._all_axes():
+            if layer_key(ax, index) == key:
+                layers = chart.settings.get("figure_options", {}).get("layers", {})
+                return layers.get(key, layers.get(str(index), {}))
+        return {}
+
+    def _rebuild_object_tree(self):
+        signature = (self.active_kind, tuple((chart.key, layer_key(ax, i), tuple((key, artist.get_label())
+                     for key, artist in plot_items(ax))) for chart, i, ax in self._all_axes()))
+        if signature == self.tree_signature:
+            return
+        previous = self.scope
+        self.object_tree.blockSignals(True)
+        self.object_tree.clear()
+        page = QTreeWidgetItem(self.object_tree, ["Page — "+tr(KINDS[self.active_kind])])
+        page.setData(0, Qt.ItemDataRole.UserRole, ("page", "", ""))
+        common = QTreeWidgetItem(page, [tr("Common Display — 共用格式")])
+        common.setData(0, Qt.ItemDataRole.UserRole, ("common", "", ""))
+        target = page
+        pages = {}
+        for chart, i, ax in self._all_axes():
+            if chart.key not in pages:
+                chart_page = QTreeWidgetItem(page, ["Page — "+chart.title])
+                chart_page.setData(0, Qt.ItemDataRole.UserRole, ("chart", chart.key, ""))
+                pages[chart.key] = chart_page
+                if previous == ("chart", chart.key, ""):
+                    target = chart_page
+            key = layer_key(ax, i)
+            layer = QTreeWidgetItem(pages[chart.key], [f"Layer{i} — "+ax.get_title()])
+            data = ("layer", key, "")
+            layer.setData(0, Qt.ItemDataRole.UserRole, data)
+            layer.setCheckState(0, Qt.CheckState.Checked if ax.get_visible() else Qt.CheckState.Unchecked)
+            if previous == data:
+                target = layer
+            for number, (plot_key, artist) in enumerate(plot_items(ax), 1):
+                label = artist.get_label()
+                item = QTreeWidgetItem(layer, [label if label and not label.startswith("_") else f"Plot{number}"])
+                data = ("plot", key, plot_key)
+                item.setData(0, Qt.ItemDataRole.UserRole, data)
+                visible = artist.patches[0].get_visible() if hasattr(artist, "patches") and artist.patches else getattr(artist, "get_visible", lambda: True)()
+                item.setCheckState(0, Qt.CheckState.Checked if visible else Qt.CheckState.Unchecked)
+                if previous == data:
+                    target = item
+        self.object_tree.expandAll()
+        self.object_tree.setCurrentItem(target)
+        self.object_tree.blockSignals(False)
+        self.tree_signature = signature
+        self._select_object(target, None)
+
+    def _selected_axis(self):
+        if not self.scope:
+            return None
+        return next((ax for _, i, ax in self._all_axes() if layer_key(ax, i) == self.scope[1]), None)
+
+    def _select_object(self, item, previous):
+        if self.loading or item is None:
+            return
+        previous_scope = self.scope
+        try:
+            self._commit_scope()
+            scope = tuple(item.data(0, Qt.ItemDataRole.UserRole))
+            self.scope = scope
+            level, key, plot = scope
+            self.selection_label.setText(item.text(0))
+            self.axes_button.setEnabled(level in ("layer", "plot"))
+            self.reset_button.setEnabled(level in ("chart", "layer", "plot"))
+            if level == "chart":
+                settings = next(chart.settings for chart in self.preview_charts if chart.key == key)
+                self.page_editor.load(settings | validate_options(settings.get("figure_options", {})))
+                self.editor_stack.setCurrentWidget(self.page_editor)
+                return
+            if level in ("page", "common"):
+                self.editor_stack.setCurrentWidget(self.tabs)
+                for i in range(self.tabs.count()):
+                    self.tabs.setTabVisible(i, level == "common" or i in (0, 1, 2, 6, 8))
+                if not self.tabs.isTabVisible(self.tabs.currentIndex()):
+                    self.tabs.setCurrentIndex(0)
+                return
+            ax = self._selected_axis()
+            if ax is None:
+                return
+            global_options = validate_options({k: self._get(w) for k, w in self.option_widgets.items()})
+            record = self._scope_record(key)
+            local = global_options | record.get("options", {})
+            if level == "layer":
+                box = ax.get_position()
+                x, y, width, height = record.get("position", [box.x0, box.y0, box.width, box.height])
+                values = local | {"title": record.get("title", ax.get_title()),
+                    "legend": record.get("legend", self.widgets["legend"].isChecked()),
+                    "manual_position": "position" in record, "left": x*100,
+                    "top": (1-y-height)*100, "width": width*100, "height": height*100}
+                self.layer_editor.load(values)
+                self.editor_stack.setCurrentWidget(self.layer_editor)
+            else:
+                artist = dict(plot_items(ax))[plot]
+                bar = hasattr(artist, "patches")
+                from matplotlib.colors import to_hex
+                values = local | {"color": to_hex(artist.patches[0].get_facecolor() if bar else artist.get_color()),
+                                  "line_width": self.widgets["line_width"].value()}
+                if not bar:
+                    values.update(line_width=artist.get_linewidth(), line_style=artist.get_linestyle(),
+                                  line_alpha=artist.get_alpha() if artist.get_alpha() is not None else 1,
+                                  marker=artist.get_marker(), marker_size=artist.get_markersize())
+                self.plot_editor.load(values | record.get("plots", {}).get(plot, {}))
+                self.plot_editor.setTabVisible(0, not bar)
+                self.plot_editor.setTabVisible(1, not bar)
+                self.plot_editor.setTabVisible(2, bar)
+                # Bar fill color belongs on Pattern as well as the Line tab.
+                self.plot_editor.setTabVisible(0, True)
+                for field in ("line_width", "line_style", "line_alpha"):
+                    self.plot_editor.fields[field].setEnabled(not bar)
+                self.editor_stack.setCurrentWidget(self.plot_editor)
+        except Exception as exc:
+            self.scope = previous_scope
+            self.notice.setText(str(exc))
+            if previous is not None:
+                self.object_tree.blockSignals(True)
+                self.object_tree.setCurrentItem(previous)
+                self.object_tree.blockSignals(False)
+
+    def _object_visibility(self, item, column):
+        if self.loading:
+            return
+        level, layer, plot = item.data(0, Qt.ItemDataRole.UserRole)
+        visible = item.checkState(0) == Qt.CheckState.Checked
+        record = self.scope_layers.setdefault(layer, {})
+        if level == "layer":
+            record["visible"] = visible
+        elif level == "plot":
+            record.setdefault("plots", {}).setdefault(plot, {})["visible"] = visible
+        self.preview()
+
+    def open_axes(self, direction="bottom"):
+        try:
+            settings = self.read_settings()
+            ax = self._selected_axis()
+            if ax is None:
+                return
+            layer = self.scope[1]
+            record = self._scope_record(layer)
+            options = settings["figure_options"] | record.get("options", {})
+            values = {side: axis_defaults(ax, side, settings, options) for side in AXIS_SIDES}
+            def update(axes):
+                candidate = copy.deepcopy(self.scope_layers)
+                candidate.setdefault(layer, {})["axes"] = axes
+                validate_options(settings["figure_options"] | {"layers": candidate})
+                self.scope_layers = candidate
+                self.preview()
+            self.axis_dialog = AxisDialog(self, layer, values, record.get("axes", {}), update,
+                                          bool(getattr(ax, "_pl_categorical", False)))
+            side = {"x": "bottom", "y": "left"}.get(direction, direction)
+            self.axis_dialog.axes_list.setCurrentRow(AXIS_SIDES.index(side) if side in AXIS_SIDES else 0)
+            self.axis_dialog.show()
+        except Exception as exc:
+            self.notice.setText(str(exc))
+
+    def reset_object(self):
+        if not self.scope:
+            return
+        level, layer, plot = self.scope
+        self.layer_editor.dirty.clear()
+        self.plot_editor.dirty.clear()
+        self.page_editor.dirty.clear()
+        if level == "chart":
+            self.chart_styles.pop(layer, None)
+        elif level == "layer":
+            self.scope_layers.pop(layer, None)
+        elif level == "plot":
+            self.scope_layers.get(layer, {}).get("plots", {}).pop(plot, None)
+        self.scope = None
+        self.preview()
+        self._select_object(self.object_tree.currentItem(), None)
+
+    def _preview_double_click(self, event):
+        if not event.dblclick:
+            return
+        ax = event.inaxes
+        direction = None
+        for _, _, owner in self._all_axes():
+            rulers = getattr(owner, "_pl_side_axes", {"bottom": owner, "left": owner})
+            # Include uncustomized mirrored spines, which still live on owner.
+            rulers = {side: rulers.get(side, owner) for side in AXIS_SIDES}
+            for side, candidate in rulers.items():
+                which = axis_direction(side)
+                axis = getattr(candidate, which+"axis")
+                objects = [axis.label, *axis.get_ticklabels()]
+                if candidate is owner:
+                    objects = [axis.label] if side in ("bottom", "left") else []
+                    for tick in axis.get_major_ticks():
+                        objects.append(tick.label1 if side in ("bottom", "left") else tick.label2)
+                objects.append(candidate.spines[side])
+                if any(obj.get_visible() and obj.contains(event)[0] for obj in objects):
+                    ax, direction = owner, side
+                    break
+            if direction:
+                break
+        if ax is None:
+            return
+        key = next((layer_key(a, i) for _, i, a in self._all_axes() if a is ax), None)
+        from PySide6.QtWidgets import QTreeWidgetItemIterator
+        iterator = QTreeWidgetItemIterator(self.object_tree)
+        hit = None if direction else next((plot_key for plot_key, artist in plot_items(ax)
+                    if hasattr(artist, "contains") and artist.contains(event)[0]), None)
+        while iterator.value():
+            item = iterator.value()
+            level, layer, plot = item.data(0, Qt.ItemDataRole.UserRole)
+            if layer == key and ((hit is not None and level == "plot" and plot == hit) or (hit is None and level == "layer")):
+                self.object_tree.setCurrentItem(item)
+                if direction:
+                    self.open_axes(direction)
+                break
+            iterator += 1
+
+    def _accept_settings(self):
+        if self.apply(False):
+            self.close()
+
+    def apply_each_chart(self):
+        """Copy a selected chart format to the chosen group(s), preserving data."""
+        try:
+            settings = self.read_settings()
+            source = next((chart for chart in self.preview_charts if self.scope and
+                           (chart.key == self.scope[1] or any(layer_key(ax, i) == self.scope[1]
+                            for i, ax in enumerate(chart.figure.axes, 1)))), self.preview_charts[0])
+            effective = chart_settings(DEFAULT_STYLE | settings, source.key)
+            page_keys = {key for _, fields in PAGE_SECTIONS for key, _, _ in fields}
+            options = validate_options(effective.get("figure_options", {}))
+            page_patch = {key: effective[key] for key in page_keys if key in effective}
+            page_patch["figure_options"] = {key: copy.deepcopy(value) for key, value in options.items() if key != "layers"}
+            content = self.copy_axis_content.isChecked()
+            if not content:
+                for key in ("annotations", "shapes", "reference_x", "reference_y", "special_x_ticks", "special_y_ticks"):
+                    page_patch["figure_options"].pop(key, None)
+            all_kinds = self.apply_scope.currentData() == "all"
+            kinds = list(KINDS) if all_kinds else [self.active_kind]
+            bundle, count = {}, 0
+            source_layers = [copy.deepcopy(self._scope_record(layer_key(ax, i)))
+                             for i, ax in enumerate(source.figure.axes, 1)]
+            from .chart_group import render_charts
+            for kind in kinds:
+                target = copy.deepcopy(settings if kind == self.active_kind else self.drafts[kind])
+                charts = self.preview_charts if kind == self.active_kind else render_charts(
+                    Figure(), kind, getattr(self.parent(), "spectra", []), target)[0]
+                styles = target.setdefault("chart_styles", {})
+                layers = target.setdefault("figure_options", {}).setdefault("layers", {})
+                for chart in charts:
+                    target_style = styles.setdefault(chart.key, {})
+                    page_options = target_style.get("figure_options", {}) | copy.deepcopy(page_patch["figure_options"])
+                    target_style.update(copy.deepcopy(page_patch))
+                    target_style["figure_options"] = page_options
+                    for index, target_ax in enumerate(chart.figure.axes, 1):
+                        if index > len(source_layers):
+                            continue
+                        target_key = layer_key(target_ax, index)
+                        record = copy.deepcopy(source_layers[index-1])
+                        if not content:
+                            existing = layers.get(target_key, layers.get(str(index), {}))
+                            for key in ("title", "xlabel", "ylabel", "xlim", "ylim"):
+                                record.pop(key, None)
+                                if key in existing:
+                                    record[key] = copy.deepcopy(existing[key])
+                            for axis in record.get("axes", {}).values():
+                                for key in ("minimum", "maximum", "label", "special_ticks", "references"):
+                                    axis.pop(key, None)
+                            for side, axis in existing.get("axes", {}).items():
+                                for key in ("minimum", "maximum", "label", "special_ticks", "references"):
+                                    if key in axis:
+                                        record.setdefault("axes", {}).setdefault(side, {})[key] = copy.deepcopy(axis[key])
+                        # Match curve roles rather than spectrum identifiers.
+                        plots = record.pop("plots", {})
+                        source_plots = plot_items(source.figure.axes[index-1])
+                        target_plots, mapped = plot_items(target_ax), {}
+                        for target_id, _ in target_plots:
+                            role = target_id.split(":", 1)[-1]
+                            match = next((k for k, _ in source_plots if k.split(":", 1)[-1] == role), None)
+                            if match is None and len(target_plots) == 1 and source_plots:
+                                match = self.scope[2] if self.scope and self.scope[0] == "plot" else source_plots[0][0]
+                            if match in plots:
+                                mapped[target_id] = copy.deepcopy(plots[match])
+                        if mapped:
+                            record["plots"] = mapped
+                        if kind != self.active_kind or chart.key != source.key:
+                            layers[target_key] = record
+                validate_chart_styles(target)
+                validate_options(target["figure_options"])
+                bundle[kind] = target
+                count += len(charts)
+            self.drafts.update(bundle)
+            self._load_form(bundle[self.active_kind])
+            self.preview()
+            if self.apply(all_kinds):
+                self.notice.setText(tr("已套用到 {0} 張獨立圖。").format(count))
+        except Exception as exc:
+            self.notice.setText(str(exc))
 
     def _refresh_dependencies(self):
         """Disable controls that do not apply to the current data or figure."""
@@ -468,8 +918,11 @@ class FigureTemplateDialog(QDialog):
             settings = self.read_settings()
             self.drafts[self.active_kind] = settings
             self.figure.set_layout_engine(None)
-            self.preview_callback(self.figure, self.active_kind, settings)
-            self.canvas.draw_idle()
+            charts = self.preview_callback(self.figure, self.active_kind, settings)
+            self.preview_charts = charts or [Chart(self.active_kind, tr(KINDS[self.active_kind]), self.figure, settings)]
+            self.preview_figures = [chart.figure for chart in self.preview_charts]
+            self.preview_group.set_charts(self.preview_charts, settings["figure_options"]["columns"])
+            self._rebuild_object_tree()
             self.notice.setText(tr("預覽已更新。套用後會同步主畫面；儲存設定檔可保留全部圖型的設定。"))
         except Exception as exc:
             self.notice.setText(tr("設定需調整：")+str(exc))
@@ -480,8 +933,10 @@ class FigureTemplateDialog(QDialog):
             bundle = self.drafts if all_kinds else {self.active_kind: self.drafts[self.active_kind]}
             self.applied.emit(copy.deepcopy(bundle))
             self.notice.setText(tr("已套用。"))
+            return True
         except Exception as exc:
             QMessageBox.warning(self, tr("設定需調整"), str(exc))
+            return False
 
     def save_file(self, path):
         self.drafts[self.active_kind] = self.read_settings()
@@ -503,6 +958,7 @@ class FigureTemplateDialog(QDialog):
             if kind not in KINDS or not isinstance(settings, dict):
                 raise ValueError(tr("圖型設定無效。"))
             validate_options(settings.get("figure_options", {}))
+            validate_chart_styles(settings)
             for key in ("width_cm", "height_cm", "dpi", "font_size", "line_width"):
                 if key in settings and (not isinstance(settings[key], (int, float)) or not np.isfinite(settings[key]) or settings[key] <= 0):
                     raise ValueError(tr('{0} 必須為正數。').format(key, ''))

@@ -12,6 +12,7 @@ from matplotlib.figure import Figure
 from .data import FitConfig
 from .plotting import COLORS, DEFAULT_STYLE
 from .figure_style import apply_figure_style, figure_size, save_figure
+from .chart_settings import chart_settings
 
 DEFAULT_OVERLAY = {"intensity": "both", "export_mode": "separate", "width_cm": 17.8, "height_cm": 12.0,
                    "dpi": 300, "font_size": 11.0, "line_width": 1.6,
@@ -51,13 +52,17 @@ def draw_overlay(figure, spectra, settings=None):
     axes = []
     for index, mode in enumerate(modes, 1):
         columns = min(len(modes), max(1, int(settings.get("figure_options", {}).get("columns", 1)) or 1))
-        ax = figure.add_subplot(int(np.ceil(len(modes)/columns)), columns, index, sharex=axes[0] if axes else None)
+        share = settings.get("figure_options", {}).get("share_x", False)
+        ax = figure.add_subplot(int(np.ceil(len(modes)/columns)), columns, index,
+                                sharex=axes[0] if axes and share else None)
+        ax._pl_style_key = "overlay:"+mode
         axes.append(ax)
         for i, s in enumerate(selected):
             y = s.y/s.y.max() if mode == "normalized" else s.y
             line_style = style["styles"].get(s.id, {})
             ax.plot(s.x, y, color=line_style.get("color", COLORS[i % len(COLORS)]),
                     linestyle=line_style.get("linestyle", "-"), linewidth=style["line_width"], label=s.name)
+            ax.lines[-1]._pl_style_key = s.id+":raw"
         ax.set_xlabel("Wavelength (nm)")
         ax.set_ylabel("Normalized intensity (I / Imax)" if mode == "normalized" else "PL intensity (Counts)")
         title = "Normalized intensity" if mode == "normalized" else "Original intensity"
@@ -82,6 +87,7 @@ def draw_overlay(figure, spectra, settings=None):
 
 def export_overlay(path, spectra, settings=None):
     settings = DEFAULT_OVERLAY | (settings or {})
+    settings = chart_settings(settings, "overlay:"+settings["intensity"])
     if not any(s.plot for s in spectra):
         raise ValueError(tr("請先勾選要疊圖的光譜。"))
     for key in ("width_cm", "height_cm", "dpi", "font_size", "line_width"):
@@ -99,8 +105,9 @@ def export_overlay_files(path, spectra, settings=None):
         raise ValueError(tr("未知的疊圖輸出模式。"))
     if mode != "separate":
         view = settings["intensity"] if mode == "current" else mode
-        export_overlay(path, spectra, settings | {"intensity": view})
-        return [Path(path)]
+        if view != "both":
+            export_overlay(path, spectra, settings | {"intensity": view})
+            return [Path(path)]
     # Check both views before creating files, so invalid normalization cannot
     # leave only the first file of a requested pair.
     if not any(s.plot for s in spectra):

@@ -58,6 +58,9 @@ def test_gaussian_recovery_and_fixed_constraint():
     assert p["fwhm"] == pytest.approx(2.354820045*9.3, rel=.002)
     assert p["amplitude"] == pytest.approx(25000, rel=.002)
     assert result["metrics"]["rmse"] < 3
+    assert p["maximum_position_stderr"] == p["center_stderr"]
+    errors = {row["parameter"]: row["stderr"] for row in result["parameters"]}
+    assert p["fwhm_stderr"] == pytest.approx(2.354820045*errors["p1_sigma"], rel=1e-5)
     assert all(p["stderr"] is not None for p in result["parameters"])
     _, params, _, _ = build_model(s, s.config)
     config = copy.deepcopy(s.config)
@@ -86,6 +89,53 @@ def test_model_can_fit_own_spectrum(name):
     result = fit_spectrum(s, c)
     assert result["success"]
     assert result["metrics"]["rmse"] < .05
+
+
+@pytest.mark.parametrize("name", ["SkewedGaussian", "SkewedVoigt"])
+def test_asymmetric_peak_uncertainties_from_fit_covariance(name):
+    s = synthetic()
+    c = FitConfig(peaks=[name], starts=1)
+    model, params, x, _ = build_model(s, c)
+    params["p1_center"].value = 804
+    params["p1_amplitude"].value = 30000
+    params["p1_sigma"].value = 8
+    params["p1_skew" if name == "SkewedVoigt" else "p1_gamma"].value = 1.1
+    s.y = model.eval(params, x=x) + np.random.default_rng(123).normal(0, 2, len(x))
+    result = fit_spectrum(s, c)
+    peak = result["peaks"][0]
+    assert result["success"]
+    assert 0 < peak["maximum_position_stderr"] < 1
+    assert 0 < peak["fwhm_stderr"] < 1
+    assert abs(peak["maximum_position"]-peak["center"]) > 1
+
+
+def test_numerical_peak_error_propagation_matches_analytic_gaussian():
+    from plstudio.fitting import _asymmetric_peak_errors, _optimize
+    s = synthetic()
+    model, params, x, y = build_model(s, s.config)
+    solution = _optimize(params, lambda p: model.eval(p, x=x)-y, 1, None)
+    errors = _asymmetric_peak_errors(MODELS["Gaussian"](prefix="p1_"), solution.params,
+                                    solution, x.min(), x.max())
+    assert errors[0] == pytest.approx(solution.params["p1_center"].stderr, rel=1e-3)
+    assert errors[1] == pytest.approx(solution.params["p1_fwhm"].stderr, rel=1e-3)
+
+
+def test_joint_asymmetric_shared_shape_has_matching_derived_errors():
+    spectra = [synthetic(), synthetic()]
+    configs = [FitConfig(peaks=["SkewedGaussian"], starts=1) for _ in spectra]
+    for index, (spectrum, config) in enumerate(zip(spectra, configs)):
+        model, params, x, _ = build_model(spectrum, config)
+        params["p1_center"].value = 804
+        params["p1_amplitude"].value = 30000 / (index+1)
+        params["p1_sigma"].value = 8
+        params["p1_gamma"].value = 1.1
+        spectrum.y = model.eval(params, x=x) + np.random.default_rng(index).normal(0, 2, len(x))
+        config.parameters = parameter_config(params)
+    results = fit_joint(spectra, configs, ["p1_center", "p1_sigma", "p1_gamma"])
+    first, second = [result["peaks"][0] for result in results]
+    for key in ("maximum_position_stderr", "fwhm_stderr"):
+        assert first[key] > 0
+        assert first[key] == pytest.approx(second[key], rel=1e-3)
 
 
 def test_expression_constraints_and_all_fixed():

@@ -14,7 +14,7 @@ import numpy as np
 from matplotlib import colormaps
 from matplotlib.colors import is_color_like
 from matplotlib.patches import Rectangle, Ellipse
-from matplotlib.ticker import AutoMinorLocator, FormatStrFormatter, LogLocator, MaxNLocator, MultipleLocator, ScalarFormatter
+from matplotlib.ticker import AutoMinorLocator, FormatStrFormatter, LogLocator, MaxNLocator, MultipleLocator, ScalarFormatter, NullLocator
 
 DEFAULT_OPTIONS = {
     "page_color": "white", "layer_color": "white", "orientation": "custom",
@@ -51,6 +51,17 @@ def validate_options(options):
     if unknown:
         raise ValueError(tr("不支援的 Figure 設定：")+", ".join(sorted(unknown)))
     merged = DEFAULT_OPTIONS | options
+    for key, value in merged.items():
+        if isinstance(value, (int, float)) and not np.isfinite(value):
+            raise ValueError(tr("設定值必須是有限數值。"))
+    for key, choices in {"xscale": ("linear", "log", "symlog"), "yscale": ("linear", "log", "symlog"),
+                         "x_format": ("auto", "fixed", "scientific", "plain"),
+                         "y_format": ("auto", "fixed", "scientific", "plain"),
+                         "tick_direction": ("in", "out", "inout")}.items():
+        if merged[key] not in choices:
+            raise ValueError(tr("刻度格式設定無效。"))
+    if not isinstance(merged["decimals"], int) or not 0 <= merged["decimals"] <= 15:
+        raise ValueError(tr("刻度格式設定無效。"))
     for key in ("page_color", "layer_color", "axis_color", "text_color", "grid_color", "legend_face", "legend_edge", "reference_color", "bar_edge"):
         if not is_color_like(merged[key]):
             raise ValueError(tr('{0} 不是有效的顏色。').format(key, ''))
@@ -63,6 +74,7 @@ def validate_options(options):
             raise ValueError(tr('{0} 必須是 JSON 陣列。').format(key, ''))
     if not isinstance(merged["layers"], dict):
         raise ValueError(tr("圖層覆寫必須是 JSON 物件。"))
+    validate_layers(merged["layers"])
     for key in ("axis_width", "x_label_size", "y_label_size", "title_size", "tick_size", "tick_width",
                 "major_length", "minor_length", "marker_size", "legend_size", "grid_width", "error_width"):
         if not isinstance(merged[key], (int, float)) or not np.isfinite(merged[key]) or merged[key] <= 0:
@@ -87,6 +99,190 @@ def validate_options(options):
         if value and (len(value) != 2 or value[0] >= value[1]):
             raise ValueError(tr('{0} 需為 [下限, 上限]。').format(key, ''))
     return merged
+
+
+def layer_key(ax, index):
+    return getattr(ax, "_pl_style_key", str(index))
+
+
+def plot_items(ax):
+    """Stable IDs survive spectrum renaming, filtering, and separate export."""
+    items = [(getattr(line, "_pl_style_key", line.get_label()), line) for line in ax.lines
+             if line.get_label() != "_nolegend_" and not getattr(line, "_pl_reference", False)]
+    items.extend((getattr(c, "_pl_style_key", f"bar:{i}"), c) for i, c in enumerate(ax.containers)
+                 if hasattr(c, "patches"))
+    return items
+
+
+def validate_layers(layers):
+    from .origin_format import AXIS_SECTIONS, PLOT_SECTIONS, AXIS_SIDES, axis_direction
+    axis_keys = {key for _, fields in AXIS_SECTIONS for key, _, _ in fields}
+    plot_keys = {key for _, fields in PLOT_SECTIONS for key, _, _ in fields} | {"visible"}
+    for layer in layers.values():
+        if not isinstance(layer, dict):
+            raise ValueError(tr("圖層覆寫必須是 JSON 物件。"))
+        if "options" in layer:
+            if "layers" in layer["options"]:
+                raise ValueError(tr("圖層不可包含巢狀圖層。"))
+            validate_options(layer["options"])
+        if "position" in layer:
+            p = layer["position"]
+            if (not isinstance(p, list) or len(p) != 4 or not all(isinstance(v, (int, float)) and np.isfinite(v) for v in p)
+                    or min(p) < 0 or min(p[2:]) <= 0 or p[0]+p[2] > 1.000001 or p[1]+p[3] > 1.000001):
+                raise ValueError(tr("圖層位置必須位於頁面內，且寬高大於零。"))
+        for key in ("xlim", "ylim"):
+            if key in layer:
+                limits = layer[key]
+                if len(limits) != 2 or not all(np.isfinite(v) for v in limits) or limits[0] >= limits[1]:
+                    raise ValueError(tr("座標下限必須小於上限。"))
+        for direction, axis in layer.get("axes", {}).items():
+            if direction not in ("x", "y", *AXIS_SIDES) or not isinstance(axis, dict) or set(axis)-axis_keys:
+                raise ValueError(tr("座標軸設定無效。"))
+            for flag in ("visible", "tick_labels"):
+                if flag in axis and not isinstance(axis[flag], bool):
+                    raise ValueError(tr("座標軸設定無效。"))
+            lo, hi = axis.get("minimum"), axis.get("maximum")
+            if any(v is not None and (not isinstance(v, (int, float)) or not np.isfinite(v)) for v in (lo, hi)):
+                raise ValueError(tr("座標範圍必須是有限值。"))
+            if lo is not None and hi is not None and lo >= hi:
+                raise ValueError(tr("座標下限必須小於上限。"))
+            if axis.get("scale") not in (None, "linear", "log", "symlog") or axis.get("scale") == "log" and any(v is not None and v <= 0 for v in (lo, hi)):
+                raise ValueError(tr("對數座標的顯示範圍必須大於零。"))
+            translated = _axis_options(DEFAULT_OPTIONS, axis_direction(direction), axis)
+            validate_options(translated | {"layers": {}})
+            for key in ("major_step",):
+                if key in axis and (not np.isfinite(axis[key]) or axis[key] < 0):
+                    raise ValueError(tr("刻度間隔必須大於或等於零。"))
+        for plot in layer.get("plots", {}).values():
+            if not isinstance(plot, dict) or set(plot)-plot_keys:
+                raise ValueError(tr("曲線設定無效。"))
+            if "color" in plot and not is_color_like(plot["color"]):
+                raise ValueError(tr("曲線顏色無效。"))
+            if "line_width" in plot and (not np.isfinite(plot["line_width"]) or plot["line_width"] <= 0):
+                raise ValueError(tr("線寬必須為正數。"))
+            validate_options({k: v for k, v in plot.items() if k in DEFAULT_OPTIONS})
+
+
+def _axis_options(base, direction, axis):
+    options = dict(base)
+    mapping = {"scale": direction+"scale", "reverse": "reverse_"+direction,
+               "major_step": direction+"_major_step", "major_count": direction+"_major_count",
+               "format": direction+"_format", "rotation": direction+"_rotation",
+               "label_size": direction+"_label_size", "special_ticks": "special_"+direction+"_ticks",
+               "references": "reference_"+direction}
+    for key, value in axis.items():
+        target = mapping.get(key, key)
+        if target in DEFAULT_OPTIONS:
+            options[target] = value
+    return options
+
+
+def _apply_axis_details(ax, direction, axis, local, settings, categorical, side=None):
+    opts = _axis_options(local, direction, axis)
+    lo, hi = axis.get("minimum"), axis.get("maximum")
+    if lo is not None or hi is not None:
+        getattr(ax, "set_"+direction+"lim")(lo, hi)
+    _format_axis(ax, direction, opts, categorical)
+    if "label" in axis:
+        getattr(ax, "set_"+direction+"label")(axis["label"])
+    label = getattr(ax, direction+"axis").label
+    label.set_fontsize(opts[direction+"_label_size"])
+    label.set_color(axis.get("axis_color", local["text_color"]))
+    label.set_fontfamily([settings.get("font", "Arial"), "Microsoft JhengHei"])
+    label.set_fontweight(local["font_weight"])
+    getattr(ax, direction+"axis").labelpad = opts["label_pad"]
+    for spine_side in ([side] if side else (("bottom", "top") if direction == "x" else ("left", "right"))):
+        ax.spines[spine_side].set_color(opts["axis_color"])
+        ax.spines[spine_side].set_linewidth(opts["axis_width"])
+    ax.tick_params(axis=direction, which="major", labelsize=opts["tick_size"], colors=opts["axis_color"],
+                   direction=opts["tick_direction"], length=opts["major_length"], width=opts["tick_width"])
+    ax.tick_params(axis=direction, which="minor", colors=opts["axis_color"], direction=opts["tick_direction"],
+                   length=opts["minor_length"], width=opts["tick_width"])
+    if side:
+        visible = axis.get("visible", local.get(side+"_axis", True))
+        ax.spines[side].set_visible(visible)
+        kwargs = {side: visible}
+        # Preserve residual panels' intentionally hidden bottom tick labels
+        # unless this side has an explicit Show setting.
+        if "tick_labels" in axis or side in ("top", "right") or not visible:
+            kwargs["label"+side] = visible and axis.get("tick_labels", side in ("bottom", "left"))
+        ax.tick_params(axis=direction, which="both", **kwargs)
+        label.set_visible(visible)
+    for text in getattr(ax, "get_"+direction+"ticklabels")():
+        text.set_fontfamily([settings.get("font", "Arial"), "Microsoft JhengHei"])
+        text.set_fontweight(local["font_weight"])
+    ax.grid(False, axis=direction, which="both")
+    for which, enabled in (("major", axis.get("grid", settings.get("grid", False))), ("minor", opts["minor_grid"])):
+        if enabled:
+            ax.grid(True, axis=direction, which=which, color=opts["grid_color"],
+                    linewidth=opts["grid_width"], linestyle=opts["grid_style"], alpha=opts["grid_alpha"])
+    for value in opts["reference_"+direction]:
+        line = (ax.axvline if direction == "x" else ax.axhline)(value, color=opts["reference_color"], linestyle=opts["reference_style"])
+        line._pl_reference = True
+
+
+def _apply_four_axes(ax, axes, local, settings, categorical):
+    """Use child axes for independent top/right scales without adding data layers.
+
+    The child axes contain only rulers, grids and reference lines. Their data
+    limits never alter the parent data transform or the opposite ruler.
+    """
+    from .origin_format import side_settings
+    for child in list(ax.child_axes):
+        if getattr(child, "_pl_axis_side", None):
+            child.remove()
+    ax._pl_side_axes = {"bottom": ax, "left": ax}
+    for side, direction in (("bottom", "x"), ("left", "y")):
+        _apply_axis_details(ax, direction, side_settings(axes, side), local, settings,
+                            categorical if direction == "x" else False, side=side)
+    for side, opposite, direction in (("top", "bottom", "x"), ("right", "left", "y")):
+        if side not in axes and opposite not in axes:
+            continue
+        child = ax.inset_axes([0, 0, 1, 1], transform=ax.transAxes, zorder=4)
+        child._pl_axis_side = side
+        child._pl_owner_axis = ax
+        child.patch.set_visible(False)
+        child.set_navigate(False)
+        child.set_xlim(sorted(ax.get_xlim()))
+        child.set_ylim(sorted(ax.get_ylim()))
+        child.xaxis.set_visible(direction == "x")
+        child.yaxis.set_visible(direction == "y")
+        for spine_side, spine in child.spines.items():
+            spine.set_visible(spine_side == side)
+        # Hide the parent's mirrored ticks and spine to avoid double drawing.
+        ax.spines[side].set_visible(False)
+        ax.tick_params(axis=direction, which="both", **{side: False, "label"+side: False})
+        axis = getattr(child, direction+"axis")
+        axis.set_ticks_position(side)
+        axis.set_label_position(side)
+        if direction == "x" and categorical:
+            ticks = ax.get_xticks()
+            child.set_xticks(ticks, ax.xaxis.get_major_formatter().format_ticks(ticks))
+        # Inherit visual defaults, but do not duplicate the primary grids or
+        # reference lines on the independent ruler.
+        secondary = local | {"reference_x": [], "reference_y": [], "minor_grid": False}
+        _apply_axis_details(child, direction, side_settings(axes, side), secondary,
+                            settings | {"grid": False}, categorical if direction == "x" else False, side=side)
+        child.set_visible(ax.get_visible())
+        ax._pl_side_axes[side] = child
+
+
+def _apply_plot_details(ax, overrides):
+    for key, artist in plot_items(ax):
+        patch = overrides.get(key, {})
+        if hasattr(artist, "patches"):
+            for bar in artist.patches:
+                for name, prop in (("color", "facecolor"), ("bar_edge", "edgecolor"), ("bar_hatch", "hatch"),
+                                   ("bar_alpha", "alpha"), ("visible", "visible")):
+                    if name in patch:
+                        getattr(bar, "set_"+prop)(patch[name])
+        else:
+            for name, prop in (("color", "color"), ("line_width", "linewidth"), ("line_style", "linestyle"),
+                               ("line_alpha", "alpha"), ("marker", "marker"), ("marker_size", "markersize"),
+                               ("marker_face", "markerfacecolor"), ("marker_edge", "markeredgecolor"),
+                               ("marker_edge_width", "markeredgewidth"), ("visible", "visible")):
+                if name in patch and patch[name] not in ("auto", "preserve"):
+                    getattr(artist, "set_"+prop)(patch[name])
 
 
 def figure_size(settings):
@@ -123,6 +319,8 @@ def _format_axis(ax, which, options, categorical=False):
             axis.set_major_locator(MultipleLocator(step) if step > 0 else MaxNLocator(options[which+"_major_count"]))
         if options["minor_ticks"]:
             axis.set_minor_locator(LogLocator(base=10, subs="auto") if scale == "log" else AutoMinorLocator(options["minor_divisions"]))
+        else:
+            axis.set_minor_locator(NullLocator())
         fmt = options[which+"_format"]
         if fmt == "fixed":
             axis.set_major_formatter(FormatStrFormatter(f"%.{options['decimals']}f"))
@@ -148,8 +346,9 @@ def apply_figure_style(figure, settings):
     figure.set_facecolor(options["page_color"])
     axes = list(figure.axes)
     for index, ax in enumerate(axes, 1):
-        overrides = options["layers"].get(str(index), {})
+        overrides = options["layers"].get(layer_key(ax, index), options["layers"].get(str(index), {}))
         local = options | overrides.get("options", {})
+        ax.set_visible(overrides.get("visible", True))
         ax.set_facecolor(local["layer_color"])
         if "position" in overrides:
             ax.set_position(overrides["position"])
@@ -225,15 +424,13 @@ def apply_figure_style(figure, settings):
                     patch.set_alpha(local["bar_alpha"])
                     if palette is not None:
                         patch.set_facecolor(palette(j % palette.N))
-        for value in local["reference_x"]:
-            ax.axvline(value, color=local["reference_color"], linestyle=local["reference_style"], lw=1)
-        for value in local["reference_y"]:
-            ax.axhline(value, color=local["reference_color"], linestyle=local["reference_style"], lw=1)
+        _apply_plot_details(ax, overrides.get("plots", {}))
+        _apply_four_axes(ax, overrides.get("axes", {}), local, settings, categorical)
         handles, labels = ax.get_legend_handles_labels()
         old = ax.get_legend()
         if old:
             old.remove()
-        if settings.get("legend", True) and handles:
+        if overrides.get("legend", settings.get("legend", True)) and handles:
             if local["legend_reverse"]:
                 handles, labels = handles[::-1], labels[::-1]
             kwargs = {"loc": local["legend_loc"], "ncol": local["legend_columns"],

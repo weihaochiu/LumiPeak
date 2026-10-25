@@ -15,6 +15,7 @@ from lmfit.models import (ConstantModel, GaussianModel, LinearModel, LorentzianM
                           PseudoVoigtModel, SkewedGaussianModel, SkewedVoigtModel,
                           VoigtModel)
 from scipy.signal import find_peaks, savgol_filter
+from scipy.optimize import brentq, minimize_scalar
 
 from .data import FitConfig, Spectrum, clean_json, transformed
 
@@ -168,7 +169,56 @@ def _statistics(residual, nvars):
             "npoints": n, "nfree": nvars}
 
 
-def _record(spectrum, config, model, params, x, y, solution, joint=None):
+def _peak_geometry(part, params, lower, upper):
+    """Continuous peak position and width for uncertainty propagation."""
+    def curve(value):
+        return float(np.asarray(part.eval(params, x=np.array([value])))[0])
+
+    # Optimize relative to the model center: scipy's relative stopping tolerance
+    # must not scale with an absolute wavelength of hundreds of nanometers.
+    origin = params[part.prefix+"center"].value
+    optimum = minimize_scalar(lambda shift: -curve(origin+shift), bounds=(lower-origin, upper-origin),
+                              method="bounded", options={"xatol": (upper-lower)*1e-11})
+    position = origin+optimum.x
+    half = curve(position) / 2
+    width = np.nan
+    if curve(lower) < half and curve(upper) < half:
+        left = brentq(lambda value: curve(value)-half, lower, position)
+        right = brentq(lambda value: curve(value)-half, position, upper)
+        width = right-left
+    return np.array([position, width])
+
+
+def _asymmetric_peak_errors(part, params, solution, lower, upper, namespace=""):
+    """Propagate the full fit covariance, including joint-fit constraints."""
+    if solution.covar is None:
+        return None, None
+    gradients = []
+    for name in solution.var_names:
+        parameter = solution.params[name]
+        step = max(abs(parameter.value)*1e-4, (parameter.stderr or 0)*1e-3, 1e-6)
+        low = max(parameter.min, parameter.value-step)
+        high = min(parameter.max, parameter.value+step)
+        if high <= low:
+            return None, None
+        values = []
+        for value in (low, high):
+            global_params = solution.params.copy()
+            global_params[name].value = value
+            global_params.update_constraints()
+            local = params.copy()
+            for key, p in local.items():
+                if not p.expr:
+                    p.value = global_params[namespace+key].value
+            local.update_constraints()
+            values.append(_peak_geometry(part, local, lower, upper))
+        gradients.append((values[1]-values[0])/(high-low))
+    jacobian = np.asarray(gradients).T
+    variances = np.einsum("ij,jk,ik->i", jacobian, solution.covar, jacobian)
+    return tuple(float(np.sqrt(v)) if np.isfinite(v) and v >= 0 else None for v in variances)
+
+
+def _record(spectrum, config, model, params, x, y, solution, joint=None, namespace=""):
     fitted = np.asarray(model.eval(params, x=x))
     residual = y-fitted
     components = {k: np.broadcast_to(np.asarray(v), x.shape).copy()
@@ -219,11 +269,20 @@ def _record(spectrum, config, model, params, x, y, solution, joint=None):
             fwhm = float(right-left)
         else:
             warnings.append(tr('Peak {1} 的半高寬超出擬合區間，未回報 FWHM').format('', i, ''))
+        if model_name in ("SkewedGaussian", "SkewedVoigt"):
+            position_error, width_error = _asymmetric_peak_errors(part, params, solution, x.min(), x.max(), namespace)
+        else:
+            position_error = params[prefix+"center"].stderr
+            width_parameter = params.get(prefix+"fwhm")
+            width_error = width_parameter.stderr if width_parameter is not None else None
+        if maximum in (0, len(dense)-1):
+            position_error = None
         peak_rows.append({"peak": i, "model": model_name,
                           "center": params[prefix+"center"].value,
                           "center_stderr": params[prefix+"center"].stderr,
-                          "maximum_position": float(dense[maximum]), "height": height,
-                          "fwhm": fwhm, "amplitude": params[prefix+"amplitude"].value,
+                          "maximum_position": float(dense[maximum]), "maximum_position_stderr": position_error,
+                          "height": height, "fwhm": fwhm, "fwhm_stderr": width_error if fwhm is not None else None,
+                          "amplitude": params[prefix+"amplitude"].value,
                           "amplitude_stderr": params[prefix+"amplitude"].stderr,
                           "area_in_range": float(np.trapezoid(curve, dense))})
     area = sum(p["area_in_range"] for p in peak_rows)
@@ -315,5 +374,5 @@ def fit_joint(spectra: list[Spectrum], configs: list[FitConfig], shared: list[st
         pp = localize(solution.params, i)
         for key in shared:
             pp[key].stderr = solution.params[f"s0_{key}"].stderr
-        results.append(_record(spectrum, config, model, pp, x, y, solution, joint))
+        results.append(_record(spectrum, config, model, pp, x, y, solution, joint, f"s{i}_"))
     return results

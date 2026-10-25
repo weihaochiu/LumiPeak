@@ -22,7 +22,9 @@ def app():
 
 @pytest.fixture
 def window(app, monkeypatch):
+    monkeypatch.setattr(MainWindow, "_startup_update", lambda self: None)
     monkeypatch.setattr(QMessageBox, "information", lambda *a, **kw: QMessageBox.StandardButton.Ok)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **kw: QMessageBox.StandardButton.Discard)
     monkeypatch.setattr(QMessageBox, "warning", lambda *a, **kw: pytest.fail(str(a[-1])))
     w = MainWindow()
     w.show()
@@ -43,6 +45,42 @@ def populate(w):
     w._load_controls()
     w._refresh_tables()
     w._draw()
+
+
+@pytest.mark.parametrize("mode", [0, TRENDS, OVERLAY])
+def test_toolbar_exports_all_images_to_folder_in_every_mode(window, monkeypatch, tmp_path, mode):
+    from PySide6.QtWidgets import QFileDialog, QInputDialog
+    populate(window)
+    window.spectra[1].plot = False
+    window.mode.setCurrentIndex(mode)
+    monkeypatch.setattr(QInputDialog, "getItem", lambda *a: ("svg", True))
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *a: str(tmp_path))
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a: pytest.fail("Expected folder export"))
+    calls, messages = [], []
+
+    def export(directory, spectra, style, extension):
+        calls.append((directory, spectra, style, extension))
+        return [tmp_path / "one.svg"], ["Unavailable trend"]
+
+    monkeypatch.setattr("plstudio.gui.export_image_set", export)
+    monkeypatch.setattr(QMessageBox, "information", lambda *a: messages.append(a[2]))
+    window.export_image()
+    assert len(calls) == 1
+    directory, spectra, style, extension = calls[0]
+    assert directory == str(tmp_path) and extension == "svg"
+    assert spectra == [window.spectra[0]]
+    assert "trends" in style and "overlay" in style
+    assert "Unavailable trend" in messages[0] and str(tmp_path) in messages[0]
+
+
+@pytest.mark.parametrize("cancel_format", [True, False])
+def test_cancel_batch_image_export_writes_nothing(window, monkeypatch, cancel_format):
+    from PySide6.QtWidgets import QFileDialog, QInputDialog
+    populate(window)
+    monkeypatch.setattr(QInputDialog, "getItem", lambda *a: ("png", not cancel_format))
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *a: "")
+    monkeypatch.setattr("plstudio.gui.export_image_set", lambda *a: pytest.fail("Export was cancelled"))
+    window.export_image()
 
 
 def wait_worker(w, app):
@@ -96,7 +134,9 @@ def test_ui_joint_fit(window, app):
     w.param_table.item(row, 6).setCheckState(Qt.CheckState.Checked)
     w.tree.selectAll()
     w.start_fit("joint")
+    assert all(not action.isEnabled() for action in w.command_actions)
     wait_worker(w, app)
+    assert all(action.isEnabled() for action in w.command_actions)
     assert w.spectra[0].result["joint"] is not None
     assert w.spectra[0].result["peaks"][0]["center"] == w.spectra[1].result["peaks"][0]["center"]
 
@@ -205,7 +245,8 @@ def test_ui_wavelength_overlay_switch_and_project_restore(window, app, tmp_path)
     window.mode.setCurrentIndex(OVERLAY)
     assert window.right.currentIndex() == OVERLAY
     assert window.overlay_intensity.currentData() == "both"
-    assert len(window.figure.axes) == 2
+    assert len(window.chart_figures) == 2
+    assert all(len(figure.axes) == 1 for figure in window.chart_figures)
     assert window.overlay_export.currentData() == "separate"
     assert len(window.axes.lines) == 2
     assert window.axes.get_xlabel() == "Wavelength (nm)"
@@ -213,7 +254,7 @@ def test_ui_wavelength_overlay_switch_and_project_restore(window, app, tmp_path)
     assert all(np.max(line.get_ydata()) == pytest.approx(1) for line in window.residual_axes.lines)
     window.overlay_export.setCurrentIndex(window.overlay_export.findData("raw"))
     assert window._read_overlay_inputs()["export_mode"] == "raw"
-    assert len(window.figure.axes) == 2  # Export choice doesn't change the preview.
+    assert len(window.chart_figures) == 2  # Export choice doesn't change the preview.
     window.overlay_intensity.setCurrentIndex(window.overlay_intensity.findData("normalized"))
     assert all(np.max(line.get_ydata()) == pytest.approx(1) for line in window.axes.lines)
     assert window.spectra[0].result["config"]["domain"] == "eV"

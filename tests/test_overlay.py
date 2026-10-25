@@ -70,10 +70,16 @@ def test_simultaneous_views_and_independent_export_choice(tmp_path):
     assert [p.name for p in paths] == ["comparison_intensity.png", "comparison_normalized.png"]
     assert all(p.exists() for p in paths)
     assert paths[0].read_bytes() != paths[1].read_bytes()
-    for export_mode in ("raw", "normalized", "both", "current"):
+    for export_mode in ("raw", "normalized"):
         path = tmp_path/f"{export_mode}.png"
         assert export_overlay_files(path, spectra, style | {"export_mode": export_mode}) == [path]
         assert path.stat().st_size > 1000
+    for export_mode in ("both", "current"):
+        path = tmp_path/f"{export_mode}.png"
+        outputs = export_overlay_files(path, spectra, style | {"export_mode": export_mode})
+        assert [p.name for p in outputs] == [f"{export_mode}_intensity.png", f"{export_mode}_normalized.png"]
+        assert all(p.stat().st_size > 1000 for p in outputs)
+        assert not path.exists()
     # No partial pair should be written if one selected spectrum cannot be normalized.
     spectra[0].y[:] = 0
     with pytest.raises(ValueError, match="最大強度"):

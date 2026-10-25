@@ -11,7 +11,7 @@ from tests.test_gui import app, window, populate
 
 def legends(window):
     return [[text.get_text() for text in axis.get_legend().get_texts()]
-            for axis in window.figure.axes]
+            for figure in window.chart_figures for axis in figure.axes]
 
 
 def test_inline_name_edit_updates_both_figures_without_losing_fit_edits(window, app):

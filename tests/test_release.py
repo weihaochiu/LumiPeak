@@ -90,6 +90,7 @@ def test_language_switch_preserves_project_and_template_edits(tmp_path, monkeypa
     from plstudio.gui import MainWindow
     from tests.test_core import synthetic
     app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(MainWindow, "_startup_update", lambda self: None)
     settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
     monkeypatch.setattr(i18n, "preferences", lambda: settings)
     monkeypatch.setattr("plstudio.gui.preferences", lambda: settings)
